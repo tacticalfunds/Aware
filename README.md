@@ -20,8 +20,23 @@ assets/js/live-lookup.js Target extraction + real API calls for the live-lookup 
 assets/js/main.js        UI wiring: rendering, search/filter, chat, settings
 ```
 
-No build step, no dependencies — open `index.html` directly or serve the folder
-with any static file server (e.g. `python3 -m http.server`).
+No build step, no dependencies for local use — open `index.html` directly or serve
+the folder with any static file server (e.g. `python3 -m http.server`).
+
+## Deploying
+
+- **GitHub Pages** — Settings → Pages → Deploy from a branch → pick this branch,
+  `/ (root)`. No build step needed.
+- **Netlify / Vercel** — drag the folder onto app.netlify.com/drop for an instant
+  URL, or connect the GitHub repo for auto-deploy on push.
+- **Railway** — `package.json` + `railway.json` in this repo are there so Railway's
+  Nixpacks builder detects it as a Node app: `npm install` pulls in
+  [`serve`](https://www.npmjs.com/package/serve), then `npm start` runs
+  `serve -s . -l $PORT`, which Railway requires (it only routes traffic to a
+  process actually listening on the port it assigns — a plain static-file repo
+  with nothing listening won't get a working deployment). In Railway: New
+  Project → Deploy from GitHub repo → select this repo/branch → it auto-detects
+  and deploys → Settings → Networking → Generate Domain for a public URL.
 
 ## How the chatbot works
 
