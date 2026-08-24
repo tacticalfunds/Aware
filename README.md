@@ -2,19 +2,30 @@
 
 A single-page website that puts an OSINT (open-source intelligence) toolkit behind
 one AI chatbot. Inspired by curated toolkit pages like
-[start.me/p/L1rEYQ/osint4all](https://start.me/p/L1rEYQ/osint4all), it bundles 165
-tools across 25 investigation categories (people search, usernames, email/breach
-data, phone lookup, social media, images, geolocation, vehicle/plate/VIN, aviation,
-maritime, domain/network recon, web archives, metadata, paste sites & code search,
-dark web, cryptocurrency, business records, government records, jobs/professional,
-academic, wireless/RF, media verification, threat intelligence, and all-in-one
-frameworks) into one searchable directory with a chat concierge on top.
+[start.me/p/L1rEYQ/osint4all](https://start.me/p/L1rEYQ/osint4all), it bundles
+**3,469 tools across 44 investigation categories** into one searchable directory
+with a chat concierge on top.
 
-**Note on coverage:** this is a curated subset, not a mirror. The original
-osint4all page runs to roughly 1,400 links across ~77 categories; every tool here
-was added by hand with a verified URL and searchable tags. If a search comes up
-empty, the directory is what's incomplete — the empty state hands the query to
-the concierge, and new tools are cheap to add (see below).
+## Where the tools come from
+
+Two provenance tiers, both marked in `assets/js/tools-data.js`:
+
+- **165 hand-written entries** (`curated: true`) — description and tags written by
+  hand, URL checked when added.
+- **~3,300 imported entries** — merged and deduplicated from four public
+  awesome-OSINT collections:
+  [edwardtay/awesome-OSINT](https://github.com/edwardtay/awesome-OSINT),
+  [cipher387/osint_stuff_tool_collection](https://github.com/cipher387/osint_stuff_tool_collection),
+  [jivoi/awesome-osint](https://github.com/jivoi/awesome-osint) and
+  [Ph055a/OSINT_Collection](https://github.com/Ph055a/OSINT_Collection).
+
+**Caveat worth knowing:** imported links are inherited from those upstream lists
+and are *not* individually verified — link rot is normal in collections this size,
+so expect some dead links. About 1,300 imported entries have no upstream
+description; those cards fall back to showing their original section heading.
+
+Regenerate the merged dataset with the scripts described in
+[`tools/README.md`](tools/README.md).
 
 ## Structure
 

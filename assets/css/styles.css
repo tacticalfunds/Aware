@@ -319,6 +319,11 @@ a { color: var(--accent); text-decoration: none; }
   flex-wrap: wrap;
   gap: 8px;
   margin: 14px 0 0;
+  /* 44 categories wrap to ~8 rows, which would let the sticky toolbar swallow
+     half the viewport. Cap it to ~3 rows and scroll within. */
+  max-height: 122px;
+  overflow-y: auto;
+  scrollbar-width: thin;
 }
 
 .pill {
@@ -403,7 +408,9 @@ a { color: var(--accent); text-decoration: none; }
 
 .category-section {
   margin-bottom: 30px;
-  scroll-margin-top: 190px;
+  /* Set from the measured sticky-toolbar height at runtime (see syncToolbarOffset),
+     so jump-to-category never lands behind the toolbar as its height changes. */
+  scroll-margin-top: calc(var(--toolbar-h, 190px) + 12px);
 }
 
 .category-section-header {
@@ -422,6 +429,25 @@ a { color: var(--accent); text-decoration: none; }
   font-size: 13px;
   color: var(--text-faint);
   margin: 0 0 14px;
+}
+
+.tool-section-hint {
+  font-style: italic;
+  opacity: 0.75;
+}
+
+.show-more-btn {
+  margin-top: 12px;
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  padding: 8px 14px;
+  border-radius: var(--radius-sm);
+  font-size: 13px;
+  cursor: pointer;
+}
+@media (hover: hover) {
+  .show-more-btn:hover { border-color: var(--accent); color: var(--accent); }
 }
 
 /* ---------- Footer ---------- */

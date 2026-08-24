@@ -106,6 +106,48 @@ function searchFilteredTools(term) {
     .map(s => s.tool);
 }
 
+// With ~3.5k tools, rendering every card up front would put tens of thousands of
+// nodes in the DOM and stall the page on mobile. Each category shows a preview and
+// reveals the rest in batches on demand.
+const CATEGORY_PREVIEW = 12;
+const SEARCH_PAGE = 60;
+
+/**
+ * Grid that renders `initial` cards, plus a button that appends the rest in
+ * batches of the same size.
+ */
+function buildCappedGrid(tools, initial) {
+  const wrap = document.createElement("div");
+  const grid = document.createElement("div");
+  grid.className = "tools-grid-inner";
+  wrap.appendChild(grid);
+
+  let shown = 0;
+  const appendBatch = n => {
+    const frag = document.createDocumentFragment();
+    const end = Math.min(shown + n, tools.length);
+    for (let i = shown; i < end; i++) frag.appendChild(renderToolCard(tools[i]));
+    grid.appendChild(frag);
+    shown = end;
+  };
+
+  appendBatch(initial);
+  if (tools.length <= initial) return wrap;
+
+  const more = document.createElement("button");
+  more.type = "button";
+  more.className = "show-more-btn";
+  const sync = () => {
+    const left = tools.length - shown;
+    if (left <= 0) { more.remove(); return; }
+    more.textContent = `Show ${Math.min(left, initial)} more (${left} remaining)`;
+  };
+  more.addEventListener("click", () => { appendBatch(initial); sync(); });
+  sync();
+  wrap.appendChild(more);
+  return wrap;
+}
+
 // Category pills act as a jump-menu over always-visible, categorized sections.
 // Typing a search term switches to a flat, ranked results view instead.
 function renderToolsGrid() {
@@ -122,8 +164,8 @@ function renderToolsGrid() {
       empty.className = "empty-state";
       empty.innerHTML = `
         <p>No tools in the directory match "${escapeHtml(state.searchTerm)}".</p>
-        <p class="empty-state-sub">The directory is a curated subset, so it won't cover everything.
-           Ask the concierge instead — it can suggest an approach even when no tool name matches.</p>`;
+        <p class="empty-state-sub">Ask the concierge instead — it can suggest an approach
+           even when no tool name matches.</p>`;
       const askBtn = document.createElement("button");
       askBtn.type = "button";
       askBtn.className = "empty-state-btn";
@@ -142,10 +184,7 @@ function renderToolsGrid() {
     label.className = "results-label";
     label.textContent = `${matches.length} result${matches.length === 1 ? "" : "s"} for "${state.searchTerm}"`;
     els.toolsGrid.appendChild(label);
-    const grid = document.createElement("div");
-    grid.className = "tools-grid-inner";
-    for (const tool of matches) grid.appendChild(renderToolCard(tool));
-    els.toolsGrid.appendChild(grid);
+    els.toolsGrid.appendChild(buildCappedGrid(matches, SEARCH_PAGE));
     return;
   }
 
@@ -159,12 +198,8 @@ function renderToolsGrid() {
     header.innerHTML = `<span class="icon">${cat.icon}</span><h3>${escapeHtml(cat.name)}</h3><span class="count">${cat.tools.length} tools</span>`;
     section.appendChild(header);
 
-    const grid = document.createElement("div");
-    grid.className = "tools-grid-inner";
-    for (const tool of cat.tools) {
-      grid.appendChild(renderToolCard({ ...tool, category: cat.name, categoryId: cat.id, categoryIcon: cat.icon }));
-    }
-    section.appendChild(grid);
+    const tools = cat.tools.map(t => ({ ...t, category: cat.name, categoryId: cat.id, categoryIcon: cat.icon }));
+    section.appendChild(buildCappedGrid(tools, CATEGORY_PREVIEW));
     els.toolsGrid.appendChild(section);
   }
 
@@ -173,8 +208,35 @@ function renderToolsGrid() {
 
 let sectionObserver = null;
 let sectionBottomHandler = null;
+let toolbarH = 190;
+
+/**
+ * The sticky toolbar's height depends on how many category pills wrap, which changes
+ * with the category count and viewport. Measure it and drive both the CSS scroll
+ * offset and the scroll-spy band off the real value instead of a magic number.
+ */
+function syncToolbarOffset() {
+  const tb = document.querySelector(".directory-toolbar");
+  const panel = document.querySelector(".directory-panel");
+  if (!tb || !panel) return;
+
+  // What matters is where the toolbar's *bottom* comes to rest once stuck, measured
+  // from the top of whichever element is actually scrolling:
+  //  - desktop: .directory-panel scrolls, and a sticky top:0 child stops at the
+  //    panel's padding edge (not its border edge), so add the panel's padding-top.
+  //  - mobile breakpoint: the panel is static and the document scrolls, with the
+  //    toolbar pinned below the fixed topbar by its own CSS `top`.
+  const panelScrolls = panel.scrollHeight > panel.clientHeight + 1;
+  const stickyTop = panelScrolls
+    ? parseFloat(getComputedStyle(panel).paddingTop) || 0
+    : parseFloat(getComputedStyle(tb).top) || 0;
+
+  toolbarH = Math.round(stickyTop + tb.getBoundingClientRect().height);
+  document.documentElement.style.setProperty("--toolbar-h", `${toolbarH}px`);
+}
 
 function setupSectionObserver() {
+  syncToolbarOffset();
   const sections = [...document.querySelectorAll(".category-section")];
   sectionObserver = new IntersectionObserver(
     entries => {
@@ -187,7 +249,7 @@ function setupSectionObserver() {
       const id = visible[0].target.id.replace("cat-", "");
       setActivePill(id);
     },
-    { rootMargin: "-190px 0px -70% 0px", threshold: 0 }
+    { rootMargin: `-${toolbarH + 12}px 0px -70% 0px`, threshold: 0 }
   );
   sections.forEach(s => sectionObserver.observe(s));
 
@@ -225,13 +287,20 @@ function renderToolCard(tool) {
   card.href = tool.url;
   card.target = "_blank";
   card.rel = "noopener noreferrer";
+  // Imported entries carry their upstream heading; show it when there's no
+  // description so the card still says something about what the tool is for.
+  const sub = tool.desc
+    ? `<p>${escapeHtml(tool.desc)}</p>`
+    : tool.section
+      ? `<p class="tool-section-hint">${escapeHtml(tool.section)}</p>`
+      : "";
   card.innerHTML = `
     <div class="tool-card-top">
       <span class="tool-icon">${tool.categoryIcon || "🔗"}</span>
-      <span class="tool-category">${tool.category}</span>
+      <span class="tool-category">${escapeHtml(tool.category)}</span>
     </div>
     <h3>${escapeHtml(tool.name)}</h3>
-    <p>${escapeHtml(tool.desc)}</p>
+    ${sub}
   `;
   return card;
 }
@@ -244,6 +313,20 @@ function wireDirectory() {
       state.searchTerm = e.target.value.trim();
       renderToolsGrid();
     }, 120);
+  });
+
+  // Pill wrapping — and so the sticky toolbar's height — changes with viewport width.
+  let resizeDebounce;
+  window.addEventListener("resize", () => {
+    clearTimeout(resizeDebounce);
+    resizeDebounce = setTimeout(() => {
+      syncToolbarOffset();
+      if (!state.searchTerm) {
+        // Rebuild the observer so its band matches the new toolbar height.
+        disconnectSectionObserver();
+        setupSectionObserver();
+      }
+    }, 150);
   });
 }
 
