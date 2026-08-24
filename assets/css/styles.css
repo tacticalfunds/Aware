@@ -32,7 +32,9 @@ body {
 }
 
 a { color: var(--accent); text-decoration: none; }
-a:hover { text-decoration: underline; }
+@media (hover: hover) {
+  a:hover { text-decoration: underline; }
+}
 
 .app-shell {
   display: flex;
@@ -69,7 +71,9 @@ a:hover { text-decoration: underline; }
   cursor: pointer;
   font-size: 13.5px;
 }
-.settings-btn:hover { border-color: var(--accent); color: var(--accent); }
+@media (hover: hover) {
+  .settings-btn:hover { border-color: var(--accent); color: var(--accent); }
+}
 
 /* ---------- Layout ---------- */
 
@@ -167,7 +171,9 @@ a:hover { text-decoration: underline; }
   border: 1px solid rgba(79, 209, 197, 0.35);
   color: var(--text);
 }
-.msg-tool-chip:hover { border-color: var(--accent); text-decoration: none; }
+@media (hover: hover) {
+  .msg-tool-chip:hover { border-color: var(--accent); text-decoration: none; }
+}
 
 /* Live lookup results */
 
@@ -229,7 +235,9 @@ a:hover { text-decoration: underline; }
   color: var(--text-dim);
   cursor: pointer;
 }
-.suggestion-chip:hover { border-color: var(--accent); color: var(--accent); }
+@media (hover: hover) {
+  .suggestion-chip:hover { border-color: var(--accent); color: var(--accent); }
+}
 
 .chat-input-row {
   display: flex;
@@ -259,7 +267,9 @@ a:hover { text-decoration: underline; }
   cursor: pointer;
   font-size: 14px;
 }
-.chat-input-row button:hover { background: var(--accent-strong); }
+@media (hover: hover) {
+  .chat-input-row button:hover { background: var(--accent-strong); }
+}
 
 /* ---------- Directory panel ---------- */
 
@@ -323,7 +333,9 @@ a:hover { text-decoration: underline; }
   font-size: 13px;
   cursor: pointer;
 }
-.pill:hover { color: var(--text); border-color: var(--accent); }
+@media (hover: hover) {
+  .pill:hover { color: var(--text); border-color: var(--accent); }
+}
 .pill.active {
   background: var(--accent-soft);
   border-color: var(--accent);
@@ -346,10 +358,12 @@ a:hover { text-decoration: underline; }
   color: var(--text);
   transition: border-color 0.15s, transform 0.15s;
 }
-.tool-card:hover {
-  border-color: var(--accent);
-  transform: translateY(-2px);
-  text-decoration: none;
+@media (hover: hover) {
+  .tool-card:hover {
+    border-color: var(--accent);
+    transform: translateY(-2px);
+    text-decoration: none;
+  }
 }
 
 .tool-card-top {
@@ -444,7 +458,9 @@ a:hover { text-decoration: underline; }
   font-size: 16px;
   cursor: pointer;
 }
-.icon-btn:hover { color: var(--text); }
+@media (hover: hover) {
+  .icon-btn:hover { color: var(--text); }
+}
 
 .modal-desc { font-size: 13px; color: var(--text-dim); margin: 8px 0 16px; line-height: 1.5; }
 
@@ -495,9 +511,11 @@ a:hover { text-decoration: underline; }
   font-weight: 600;
 }
 .btn-primary { background: var(--accent); border: none; color: #06201d; }
-.btn-primary:hover { background: var(--accent-strong); }
 .btn-secondary { background: transparent; border: 1px solid var(--border); color: var(--text-dim); }
-.btn-secondary:hover { border-color: var(--danger); color: var(--danger); }
+@media (hover: hover) {
+  .btn-primary:hover { background: var(--accent-strong); }
+  .btn-secondary:hover { border-color: var(--danger); color: var(--danger); }
+}
 
 /* ---------- Scrollbars ---------- */
 
@@ -520,4 +538,15 @@ a:hover { text-decoration: underline; }
   }
   .directory-panel { height: auto; overflow: visible; }
   .directory-toolbar { top: 65px; }
+
+  /* The pill row wraps to ~10 lines at phone widths, which would make the sticky
+     toolbar swallow most of the screen. Scroll it horizontally in one line instead. */
+  .category-pills {
+    flex-wrap: nowrap;
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+    padding-bottom: 4px;
+    scrollbar-width: thin;
+  }
+  .pill { flex: 0 0 auto; }
 }
