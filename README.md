@@ -1,13 +1,20 @@
 # Aware — OSINT Tool Concierge
 
-A single-page website that puts an entire OSINT (open-source intelligence) toolkit
-behind one AI chatbot. Inspired by curated toolkit pages like
-[start.me/p/L1rEYQ/osint4all](https://start.me/p/L1rEYQ/osint4all), it bundles 116
-tools across 18 investigation categories (people search, usernames, email/breach
-data, phone lookup, social media, images, geolocation, domain/network recon, web
-archives, metadata, dark web, cryptocurrency, business records, government records,
-media verification, threat intelligence, and all-in-one frameworks) into one
-searchable directory with a chat concierge on top.
+A single-page website that puts an OSINT (open-source intelligence) toolkit behind
+one AI chatbot. Inspired by curated toolkit pages like
+[start.me/p/L1rEYQ/osint4all](https://start.me/p/L1rEYQ/osint4all), it bundles 165
+tools across 25 investigation categories (people search, usernames, email/breach
+data, phone lookup, social media, images, geolocation, vehicle/plate/VIN, aviation,
+maritime, domain/network recon, web archives, metadata, paste sites & code search,
+dark web, cryptocurrency, business records, government records, jobs/professional,
+academic, wireless/RF, media verification, threat intelligence, and all-in-one
+frameworks) into one searchable directory with a chat concierge on top.
+
+**Note on coverage:** this is a curated subset, not a mirror. The original
+osint4all page runs to roughly 1,400 links across ~77 categories; every tool here
+was added by hand with a verified URL and searchable tags. If a search comes up
+empty, the directory is what's incomplete — the empty state hands the query to
+the concierge, and new tools are cheap to add (see below).
 
 ## Structure
 

@@ -383,7 +383,23 @@ a { color: var(--accent); text-decoration: none; }
 .tool-card h3 { margin: 0 0 6px; font-size: 15px; }
 .tool-card p { margin: 0; font-size: 12.5px; color: var(--text-dim); line-height: 1.45; }
 
-.empty-state { color: var(--text-faint); font-size: 14px; }
+.empty-state { color: var(--text-dim); font-size: 14px; max-width: 60ch; }
+.empty-state p { margin: 0 0 8px; }
+.empty-state-sub { color: var(--text-faint); font-size: 13px; line-height: 1.5; }
+.empty-state-btn {
+  margin-top: 6px;
+  background: var(--accent-soft);
+  border: 1px solid var(--accent);
+  color: var(--accent-strong);
+  padding: 9px 14px;
+  border-radius: var(--radius-sm);
+  font-size: 13.5px;
+  font-weight: 600;
+  cursor: pointer;
+}
+@media (hover: hover) {
+  .empty-state-btn:hover { background: var(--accent); color: #06201d; }
+}
 
 .category-section {
   margin-bottom: 30px;

@@ -110,6 +110,43 @@ const WORKFLOWS = [
     ]
   },
   {
+    triggers: ["license plate", "number plate", "vin", "vehicle", "identify a car", "trace a car", "who owns this car"],
+    title: "Investigating a vehicle, plate or VIN",
+    steps: [
+      { text: "If you only have a photo, read the plate and identify the make/model first.", categoryId: "vehicle" },
+      { text: "Decode the VIN for specs, then check theft/salvage and auction history.", categoryId: "vehicle" },
+      { text: "Country matters — plate formats and official registries differ per jurisdiction.", categoryId: "vehicle" },
+      { text: "If the photo is your only lead, geolocate it too — background clues often beat the plate.", categoryId: "geolocation" }
+    ]
+  },
+  {
+    triggers: ["flight", "aircraft", "tail number", "track a plane", "aviation"],
+    title: "Tracking an aircraft",
+    steps: [
+      { text: "Track the live/historical flight path by callsign or registration.", categoryId: "aviation" },
+      { text: "Look up the registration for owner and airframe details.", categoryId: "aviation" },
+      { text: "Photo databases can confirm the specific airframe and its liveries over time.", categoryId: "aviation" }
+    ]
+  },
+  {
+    triggers: ["ship", "vessel", "imo number", "track a boat", "maritime"],
+    title: "Tracking a vessel",
+    steps: [
+      { text: "Track live AIS position and port-call history by name or IMO number.", categoryId: "maritime" },
+      { text: "Pull registered ownership and management from the ship registry.", categoryId: "maritime" },
+      { text: "Cross-check the operating company against corporate records.", categoryId: "business" }
+    ]
+  },
+  {
+    triggers: ["wifi", "ssid", "cell tower", "bssid", "wireless network"],
+    title: "Geolocating a wireless network",
+    steps: [
+      { text: "Look the SSID/BSSID up in crowdsourced wardriving databases.", categoryId: "wireless-rf" },
+      { text: "For cell IDs, map the tower against open cell databases.", categoryId: "wireless-rf" },
+      { text: "Confirm the resulting location against maps and imagery.", categoryId: "geolocation" }
+    ]
+  },
+  {
     triggers: ["dark web", "onion site", "darknet"],
     title: "Searching the dark web",
     steps: [

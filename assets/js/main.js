@@ -116,7 +116,26 @@ function renderToolsGrid() {
     const matches = searchFilteredTools(state.searchTerm);
     setActivePill("all");
     if (matches.length === 0) {
-      els.toolsGrid.innerHTML = `<p class="empty-state">No tools match "${escapeHtml(state.searchTerm)}". Try a different term.</p>`;
+      // A dead end is unhelpful — hand the query to the concierge, which knows
+      // workflows and (with a key) can reason beyond literal keyword matches.
+      const empty = document.createElement("div");
+      empty.className = "empty-state";
+      empty.innerHTML = `
+        <p>No tools in the directory match "${escapeHtml(state.searchTerm)}".</p>
+        <p class="empty-state-sub">The directory is a curated subset, so it won't cover everything.
+           Ask the concierge instead — it can suggest an approach even when no tool name matches.</p>`;
+      const askBtn = document.createElement("button");
+      askBtn.type = "button";
+      askBtn.className = "empty-state-btn";
+      askBtn.textContent = `Ask the concierge about "${state.searchTerm}"`;
+      askBtn.addEventListener("click", () => {
+        const q = state.searchTerm;
+        pushUserMessage(q);
+        handleUserQuery(q);
+        els.chatMessages.scrollIntoView({ behavior: "smooth", block: "nearest" });
+      });
+      empty.appendChild(askBtn);
+      els.toolsGrid.appendChild(empty);
       return;
     }
     const label = document.createElement("p");
