@@ -219,6 +219,95 @@ a { color: var(--accent); text-decoration: none; }
   font-style: italic;
 }
 
+/* Agent investigation trace */
+
+.msg-trace { width: 100%; max-width: 100%; }
+.trace-status {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--accent-strong);
+  margin-bottom: 8px;
+}
+.trace-step { margin-bottom: 7px; font-size: 12.5px; }
+.trace-tool code {
+  font-size: 11px;
+  color: var(--text-faint);
+  word-break: break-all;
+}
+.trace-result {
+  border-left: 2px solid var(--border);
+  padding-left: 8px;
+  color: var(--text-dim);
+  line-height: 1.5;
+}
+.trace-result.ok { border-left-color: var(--accent); }
+.trace-result.err { border-left-color: var(--danger); color: #c88; }
+.trace-text { color: var(--text); line-height: 1.55; }
+.trace-thinking summary {
+  cursor: pointer;
+  font-size: 11.5px;
+  color: var(--text-faint);
+}
+.trace-thinking > div {
+  margin-top: 5px;
+  padding-left: 8px;
+  border-left: 2px solid var(--border-soft);
+  color: var(--text-faint);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+/* Image attachment */
+
+.msg-image {
+  display: block;
+  max-width: 200px;
+  border-radius: var(--radius-sm);
+  margin-bottom: 6px;
+}
+
+/* Must beat the UA's [hidden]{display:none} — a bare `display:flex` here wins on
+   specificity and leaves the preview stuck on screen after sending. */
+.attach-preview[hidden] { display: none; }
+
+.attach-preview {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin: 0 16px 8px;
+  padding: 6px 8px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+}
+.attach-preview img {
+  width: 34px;
+  height: 34px;
+  object-fit: cover;
+  border-radius: 4px;
+}
+.attach-name {
+  flex: 1;
+  font-size: 12px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.attach-btn {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  color: var(--text-dim);
+  font-size: 15px;
+  padding: 0 11px;
+  cursor: pointer;
+}
+@media (hover: hover) {
+  .attach-btn:hover { border-color: var(--accent); color: var(--accent); }
+}
+
 .chat-suggestions {
   display: flex;
   flex-wrap: wrap;

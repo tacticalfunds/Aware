@@ -35,7 +35,9 @@ assets/css/styles.css    All styling (dark theme, responsive two-column layout)
 assets/js/tools-data.js  Tool database: categories -> tools (name, url, desc, tags)
 assets/js/chatbot.js     Chat brain: keyword matcher, workflow library, Claude API call
 assets/js/live-lookup.js Target extraction + real API calls for the live-lookup feature
+assets/js/agent.js       Autonomous investigation agent (Claude tool-use loop + vision)
 assets/js/main.js        UI wiring: rendering, search/filter, chat, settings
+tools/                   Scripts that regenerate tools-data.js from upstream lists
 ```
 
 No build step, no dependencies for local use — open `index.html` directly or serve
@@ -69,6 +71,32 @@ Two modes, switchable from the "AI settings" button in the header:
   (`api.anthropic.com/v1/messages` with `anthropic-dangerous-direct-browser-access`),
   grounding answers on the closest-matching tools from the same directory. The key
   is stored only in `localStorage` and is never sent anywhere but Anthropic's API.
+
+## Autonomous investigation
+
+Give the concierge a task and it runs the investigation itself: plans, calls tools,
+reads the results, follows the leads, and writes up what it found. Attach an image
+(button or paste) and it analyses that too. Every step is shown live in the chat —
+reasoning, each tool call and its result — so nothing is a black box.
+
+It routes to the agent when you attach an image, or when the task reads as an
+instruction to go and do something ("investigate…", "look into…", "run a check on…").
+Requires an Anthropic API key: it genuinely needs to reason about the task and decide
+what to check next, which keyword matching can't do. Without a key it says so and
+falls back to direct lookups plus tool recommendations.
+
+Its tools are the live-lookup functions plus a search over the local directory — so
+for the ~3,400 sources with no browser-callable API it hands back specific named
+tools and what to search for in each. Implementation in `assets/js/agent.js`
+(Claude tool-use loop, capped at 12 steps to bound cost).
+
+**Scope limits, enforced in the agent's system prompt:** it will geolocate a photo —
+standard OSINT work — but it will not read the licence plates of uninvolved cars in a
+car park or street scene and run their registrations, nor try to identify bystanders'
+faces. That's bulk collection against people who aren't the subject of the
+investigation. It will look up a specific vehicle you have a stated lawful reason to
+investigate. It declines tasks aimed at stalking or covertly monitoring a private
+individual.
 
 ## Live lookup — actually running tools, not just linking to them
 

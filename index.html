@@ -34,9 +34,17 @@
 
       <div id="chatSuggestions" class="chat-suggestions"></div>
 
+      <div id="attachPreview" class="attach-preview" hidden>
+        <img id="attachThumb" alt="Attached image preview" />
+        <span id="attachName" class="attach-name"></span>
+        <button type="button" id="attachRemove" class="icon-btn" aria-label="Remove image">✕</button>
+      </div>
+
       <form id="chatForm" class="chat-input-row">
+        <button type="button" id="attachBtn" class="attach-btn" title="Attach an image to investigate" aria-label="Attach image">📎</button>
+        <input id="attachInput" type="file" accept="image/*" hidden />
         <input id="chatInput" type="text" autocomplete="off"
-               placeholder="e.g. how do I trace a username, or verify a photo?" />
+               placeholder="Give me a task — or attach an image to investigate" />
         <button type="submit">Send</button>
       </form>
     </section>
@@ -84,9 +92,9 @@
     <input id="apiKeyInput" type="password" placeholder="sk-ant-..." autocomplete="off" />
     <label class="field-label" for="modelSelect">Model</label>
     <select id="modelSelect">
+      <option value="claude-opus-5">Claude Opus 5 (most capable — best for investigations)</option>
       <option value="claude-sonnet-5">Claude Sonnet 5 (balanced)</option>
-      <option value="claude-haiku-4-5-20251001">Claude Haiku 4.5 (fast)</option>
-      <option value="claude-opus-5">Claude Opus 5 (most capable)</option>
+      <option value="claude-haiku-4-5">Claude Haiku 4.5 (fastest, cheapest)</option>
     </select>
     <p class="modal-note">
       Your key is stored only in this browser's local storage and sent directly to Anthropic's API —
@@ -127,6 +135,7 @@
 <script src="assets/js/tools-data.js"></script>
 <script src="assets/js/chatbot.js"></script>
 <script src="assets/js/live-lookup.js"></script>
+<script src="assets/js/agent.js"></script>
 <script src="assets/js/main.js"></script>
 </body>
 </html>

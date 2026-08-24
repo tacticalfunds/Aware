@@ -6,7 +6,8 @@ const state = {
   apiKey: localStorage.getItem("aware_api_key") || "",
   model: localStorage.getItem("aware_model") || "claude-sonnet-5",
   chatHistory: [], // Claude-format history for AI mode: {role, content}
-  liveKeys: JSON.parse(localStorage.getItem("aware_live_keys") || "{}")
+  liveKeys: JSON.parse(localStorage.getItem("aware_live_keys") || "{}"),
+  attachedImage: null // { media_type, data, name } — data is bare base64
 };
 
 const els = {};
@@ -48,6 +49,12 @@ function cacheEls() {
   els.saveSettings = document.getElementById("saveSettings");
   els.clearSettings = document.getElementById("clearSettings");
   els.suggestions = document.getElementById("chatSuggestions");
+  els.attachBtn = document.getElementById("attachBtn");
+  els.attachInput = document.getElementById("attachInput");
+  els.attachPreview = document.getElementById("attachPreview");
+  els.attachThumb = document.getElementById("attachThumb");
+  els.attachName = document.getElementById("attachName");
+  els.attachRemove = document.getElementById("attachRemove");
   els.liveKeyInputs = {
     shodan: document.getElementById("shodanKeyInput"),
     virustotal: document.getElementById("virustotalKeyInput"),
@@ -336,11 +343,13 @@ function wireChat() {
   els.chatForm.addEventListener("submit", async e => {
     e.preventDefault();
     const text = els.chatInput.value.trim();
-    if (!text) return;
+    if (!text && !state.attachedImage) return;
     els.chatInput.value = "";
-    pushUserMessage(text);
+    pushUserMessage(text || "(investigate this image)", state.attachedImage);
     await handleUserQuery(text);
   });
+
+  wireAttach();
 
   const suggestions = [
     "Investigate a person",
@@ -364,7 +373,77 @@ function wireChat() {
   }
 }
 
+/* ---------------- Image attachment ---------------- */
+
+function wireAttach() {
+  els.attachBtn.addEventListener("click", () => els.attachInput.click());
+  els.attachInput.addEventListener("change", e => {
+    const file = e.target.files?.[0];
+    if (file) loadAttachment(file);
+    els.attachInput.value = "";
+  });
+  els.attachRemove.addEventListener("click", clearAttachment);
+  // Pasting a screenshot straight into the chat is the fastest path for image tasks.
+  els.chatInput.addEventListener("paste", e => {
+    const item = [...(e.clipboardData?.items || [])].find(i => i.type.startsWith("image/"));
+    if (item) {
+      const file = item.getAsFile();
+      if (file) { e.preventDefault(); loadAttachment(file); }
+    }
+  });
+}
+
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+
+function loadAttachment(file) {
+  if (!file.type.startsWith("image/")) return;
+  if (file.size > MAX_IMAGE_BYTES) {
+    pushBotMessage(`That image is ${(file.size / 1048576).toFixed(1)} MB — too large to send. Please attach one under 5 MB.`, []);
+    return;
+  }
+  const reader = new FileReader();
+  reader.onload = () => {
+    const url = String(reader.result);
+    state.attachedImage = {
+      media_type: file.type,
+      data: url.split(",")[1], // strip the data: prefix; the API wants bare base64
+      name: file.name || "pasted image"
+    };
+    els.attachThumb.src = url;
+    els.attachName.textContent = state.attachedImage.name;
+    els.attachPreview.hidden = false;
+  };
+  reader.readAsDataURL(file);
+}
+
+function clearAttachment() {
+  state.attachedImage = null;
+  els.attachThumb.removeAttribute("src");
+  els.attachPreview.hidden = true;
+}
+
 async function handleUserQuery(text) {
+  // An image, or an explicit investigate-style task, goes to the autonomous agent.
+  const image = state.attachedImage;
+  const wantsAgent = !!image || looksLikeInvestigation(text);
+
+  if (wantsAgent) {
+    clearAttachment();
+    if (state.apiKey) {
+      await runAgentTask(text, image);
+      return;
+    }
+    pushBotMessage(
+      "Running an investigation on my own needs an **Anthropic API key** — I have to reason about the " +
+      "task, choose tools, read results and decide what to check next, which local keyword matching " +
+      "can't do." + (image ? " Reading an image needs one too." : "") +
+      " Add your key under **AI settings** and I'll take the whole task. Meanwhile, here's what I can " +
+      "still do without one:",
+      []
+    );
+    // Fall through — direct lookups and tool matching still work and are worth having.
+  }
+
   const targets = extractTargets(text);
   if (targets.length > 0) {
     const loadingId = pushBotMessage(
@@ -403,11 +482,103 @@ async function handleUserQuery(text) {
   pushBotMessage(local.text, local.toolCards);
 }
 
+// Deliberately narrow: verbs that mean "go and do this for me". Generic words like
+// "trace" or "profile" are left out — they collide with the built-in workflows
+// ("Trace a username"), which are the better answer when there's no key.
+const INVESTIGATE_RE = /\b(investigate|look into|dig into|find out (about|who|where)|run a (check|report) on|recon)\b/i;
+
+function looksLikeInvestigation(text) {
+  return INVESTIGATE_RE.test(text || "");
+}
+
+async function runAgentTask(text, image) {
+
+  const trace = createTraceBubble();
+  try {
+    await runInvestigation({
+      apiKey: state.apiKey,
+      model: state.model,
+      task: text || "Investigate this image: work out where it was taken and anything else verifiable.",
+      image: image ? { media_type: image.media_type, data: image.data } : null,
+      liveKeys: state.liveKeys,
+      onEvent: ev => trace.push(ev)
+    });
+  } catch (err) {
+    trace.push({ type: "error", text: err.message || String(err) });
+  }
+  trace.finish();
+}
+
+/** A live-updating bubble showing each step the agent takes. */
+function createTraceBubble() {
+  const id = `msg-${++msgCounter}`;
+  const wrap = document.createElement("div");
+  wrap.className = "msg msg-bot msg-trace";
+  wrap.id = id;
+  wrap.innerHTML = `<div class="trace-status">🔎 Investigating…</div><div class="trace-steps"></div>`;
+  els.chatMessages.appendChild(wrap);
+  scrollChatToBottom();
+
+  const steps = wrap.querySelector(".trace-steps");
+  const status = wrap.querySelector(".trace-status");
+
+  const add = html => {
+    const d = document.createElement("div");
+    d.className = "trace-step";
+    d.innerHTML = html;
+    steps.appendChild(d);
+    scrollChatToBottom();
+  };
+
+  return {
+    push(ev) {
+      switch (ev.type) {
+        case "thinking":
+          add(`<details class="trace-thinking"><summary>Reasoning</summary><div>${mdLiteToHtml(ev.text)}</div></details>`);
+          break;
+        case "tool_call":
+          add(`<div class="trace-tool">⚙️ <strong>${escapeHtml(ev.name)}</strong> <code>${escapeHtml(JSON.stringify(ev.input))}</code></div>`);
+          break;
+        case "tool_result":
+          add(`<div class="trace-result ${ev.ok ? "ok" : "err"}">${ev.ok ? "✓" : "✗"} ${mdLiteToHtml(truncate(ev.text, 400))}</div>`);
+          break;
+        case "text":
+          add(`<div class="trace-text">${mdLiteToHtml(ev.text)}</div>`);
+          break;
+        case "refusal":
+          add(`<div class="trace-result err">Declined: ${escapeHtml(ev.text)}</div>`);
+          break;
+        case "error":
+          add(`<div class="trace-result err">Error: ${escapeHtml(ev.text)}</div>`);
+          break;
+      }
+    },
+    finish() {
+      status.textContent = "🔎 Investigation complete";
+      scrollChatToBottom();
+    }
+  };
+}
+
+function truncate(s, n) {
+  s = String(s || "");
+  return s.length > n ? s.slice(0, n) + "…" : s;
+}
+
 let msgCounter = 0;
-function pushUserMessage(text) {
+function pushUserMessage(text, image) {
   const div = document.createElement("div");
   div.className = "msg msg-user";
-  div.textContent = text;
+  if (image) {
+    const img = document.createElement("img");
+    img.className = "msg-image";
+    img.src = `data:${image.media_type};base64,${image.data}`;
+    img.alt = "Attached image";
+    div.appendChild(img);
+  }
+  const p = document.createElement("div");
+  p.textContent = text;
+  div.appendChild(p);
   els.chatMessages.appendChild(div);
   scrollChatToBottom();
 }
