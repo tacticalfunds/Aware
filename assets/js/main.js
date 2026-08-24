@@ -65,38 +65,127 @@ function makePill(id, label, icon) {
   btn.dataset.id = id;
   btn.innerHTML = `<span>${icon}</span> ${label}`;
   btn.addEventListener("click", () => {
-    state.activeCategory = id;
-    [...els.categoryPills.children].forEach(p => p.classList.toggle("active", p.dataset.id === id));
-    renderToolsGrid();
+    setActivePill(id);
+    if (state.searchTerm) {
+      // Jumping to a category should drop any active search so the full section is visible.
+      state.searchTerm = "";
+      els.dirSearch.value = "";
+      renderToolsGrid();
+    }
+    if (id === "all") {
+      els.toolsGrid.scrollIntoView({ behavior: "smooth", block: "start" });
+    } else {
+      document.getElementById(`cat-${id}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+    }
   });
   return btn;
 }
 
-function getFilteredTools() {
-  let list = OSINT_TOOLS_FLAT;
-  if (state.activeCategory !== "all") {
-    list = list.filter(t => t.categoryId === state.activeCategory);
-  }
-  if (state.searchTerm) {
-    const tokens = tokenize(state.searchTerm);
-    list = list
-      .map(tool => ({ tool, score: scoreTool(tool, tokens) }))
-      .filter(s => s.score > 0)
-      .sort((a, b) => b.score - a.score)
-      .map(s => s.tool);
-  }
-  return list;
+function setActivePill(id) {
+  state.activeCategory = id;
+  [...els.categoryPills.children].forEach(p => p.classList.toggle("active", p.dataset.id === id));
 }
 
+function searchFilteredTools(term) {
+  const tokens = tokenize(term);
+  return OSINT_TOOLS_FLAT
+    .map(tool => ({ tool, score: scoreTool(tool, tokens) }))
+    .filter(s => s.score > 0)
+    .sort((a, b) => b.score - a.score)
+    .map(s => s.tool);
+}
+
+// Category pills act as a jump-menu over always-visible, categorized sections.
+// Typing a search term switches to a flat, ranked results view instead.
 function renderToolsGrid() {
-  const list = getFilteredTools();
   els.toolsGrid.innerHTML = "";
-  if (list.length === 0) {
-    els.toolsGrid.innerHTML = `<p class="empty-state">No tools match that search. Try a different term.</p>`;
+  disconnectSectionObserver();
+
+  if (state.searchTerm) {
+    const matches = searchFilteredTools(state.searchTerm);
+    setActivePill("all");
+    if (matches.length === 0) {
+      els.toolsGrid.innerHTML = `<p class="empty-state">No tools match "${escapeHtml(state.searchTerm)}". Try a different term.</p>`;
+      return;
+    }
+    const label = document.createElement("p");
+    label.className = "results-label";
+    label.textContent = `${matches.length} result${matches.length === 1 ? "" : "s"} for "${state.searchTerm}"`;
+    els.toolsGrid.appendChild(label);
+    const grid = document.createElement("div");
+    grid.className = "tools-grid-inner";
+    for (const tool of matches) grid.appendChild(renderToolCard(tool));
+    els.toolsGrid.appendChild(grid);
     return;
   }
-  for (const tool of list) {
-    els.toolsGrid.appendChild(renderToolCard(tool));
+
+  for (const cat of OSINT_CATEGORIES) {
+    const section = document.createElement("section");
+    section.className = "category-section";
+    section.id = `cat-${cat.id}`;
+
+    const header = document.createElement("div");
+    header.className = "category-section-header";
+    header.innerHTML = `<span class="icon">${cat.icon}</span><h3>${escapeHtml(cat.name)}</h3><span class="count">${cat.tools.length} tools</span>`;
+    section.appendChild(header);
+
+    const grid = document.createElement("div");
+    grid.className = "tools-grid-inner";
+    for (const tool of cat.tools) {
+      grid.appendChild(renderToolCard({ ...tool, category: cat.name, categoryId: cat.id, categoryIcon: cat.icon }));
+    }
+    section.appendChild(grid);
+    els.toolsGrid.appendChild(section);
+  }
+
+  setupSectionObserver();
+}
+
+let sectionObserver = null;
+let sectionBottomHandler = null;
+
+function setupSectionObserver() {
+  const sections = [...document.querySelectorAll(".category-section")];
+  sectionObserver = new IntersectionObserver(
+    entries => {
+      const visible = entries.filter(e => e.isIntersecting);
+      if (visible.length === 0) return;
+      // Multiple sections can intersect the active band at once (a tall one ending, a short
+      // one starting) — the current section is whichever has scrolled closest to the top edge
+      // without going past it, i.e. the largest (least negative) top.
+      visible.sort((a, b) => b.boundingClientRect.top - a.boundingClientRect.top);
+      const id = visible[0].target.id.replace("cat-", "");
+      setActivePill(id);
+    },
+    { rootMargin: "-190px 0px -70% 0px", threshold: 0 }
+  );
+  sections.forEach(s => sectionObserver.observe(s));
+
+  // A short last section can never scroll its header up to the active band (there's no more
+  // page below it to scroll through), so the observer alone would never highlight it. Force it
+  // active once the user has scrolled to the bottom, on whichever container actually scrolls
+  // (the bounded .directory-panel on desktop, or the document itself on the mobile breakpoint).
+  const dirPanel = document.querySelector(".directory-panel");
+  const lastId = OSINT_CATEGORIES[OSINT_CATEGORIES.length - 1].id;
+  sectionBottomHandler = () => {
+    const doc = document.documentElement;
+    const atBottomPanel = dirPanel.scrollHeight - dirPanel.scrollTop - dirPanel.clientHeight < 4;
+    const atBottomDoc = doc.scrollHeight - window.scrollY - doc.clientHeight < 4;
+    if (atBottomPanel || atBottomDoc) setActivePill(lastId);
+  };
+  dirPanel.addEventListener("scroll", sectionBottomHandler);
+  window.addEventListener("scroll", sectionBottomHandler);
+}
+
+function disconnectSectionObserver() {
+  if (sectionObserver) {
+    sectionObserver.disconnect();
+    sectionObserver = null;
+  }
+  if (sectionBottomHandler) {
+    document.querySelector(".directory-panel")?.removeEventListener("scroll", sectionBottomHandler);
+    window.removeEventListener("scroll", sectionBottomHandler);
+    sectionBottomHandler = null;
   }
 }
 

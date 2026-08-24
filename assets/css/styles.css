@@ -46,7 +46,8 @@ a:hover { text-decoration: underline; }
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: 14px 24px;
+  height: 65px;
+  padding: 0 24px;
   border-bottom: 1px solid var(--border-soft);
   background: linear-gradient(180deg, var(--bg-raised), var(--bg));
   position: sticky;
@@ -79,11 +80,6 @@ a:hover { text-decoration: underline; }
   gap: 0;
   align-items: stretch;
   min-height: 0;
-}
-
-@media (max-width: 900px) {
-  .layout { grid-template-columns: 1fr; }
-  .chat-panel { height: 60vh; border-right: none; border-bottom: 1px solid var(--border-soft); }
 }
 
 /* ---------- Chat panel ---------- */
@@ -226,6 +222,7 @@ a:hover { text-decoration: underline; }
 .directory-panel {
   padding: 28px 32px 48px;
   overflow-y: auto;
+  height: calc(100vh - 65px);
 }
 
 .directory-hero h2 {
@@ -241,7 +238,17 @@ a:hover { text-decoration: underline; }
   font-size: 14.5px;
 }
 
-.directory-hero input {
+.directory-toolbar {
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  background: var(--bg);
+  padding: 14px 0 16px;
+  margin-bottom: 6px;
+  border-bottom: 1px solid var(--border-soft);
+}
+
+.directory-toolbar input {
   width: 100%;
   max-width: 480px;
   background: var(--bg-card);
@@ -251,13 +258,13 @@ a:hover { text-decoration: underline; }
   border-radius: var(--radius-sm);
   font-size: 14.5px;
 }
-.directory-hero input:focus { outline: none; border-color: var(--accent); }
+.directory-toolbar input:focus { outline: none; border-color: var(--accent); }
 
 .category-pills {
   display: flex;
   flex-wrap: wrap;
   gap: 8px;
-  margin: 22px 0 20px;
+  margin: 14px 0 0;
 }
 
 .pill {
@@ -280,7 +287,7 @@ a:hover { text-decoration: underline; }
   font-weight: 600;
 }
 
-.tools-grid {
+.tools-grid-inner {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(230px, 1fr));
   gap: 14px;
@@ -319,6 +326,29 @@ a:hover { text-decoration: underline; }
 .tool-card p { margin: 0; font-size: 12.5px; color: var(--text-dim); line-height: 1.45; }
 
 .empty-state { color: var(--text-faint); font-size: 14px; }
+
+.category-section {
+  margin-bottom: 30px;
+  scroll-margin-top: 190px;
+}
+
+.category-section-header {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-bottom: 12px;
+  padding-bottom: 8px;
+  border-bottom: 1px solid var(--border-soft);
+}
+.category-section-header .icon { font-size: 18px; }
+.category-section-header h3 { margin: 0; font-size: 16px; }
+.category-section-header .count { font-size: 12px; color: var(--text-faint); }
+
+.results-label {
+  font-size: 13px;
+  color: var(--text-faint);
+  margin: 0 0 14px;
+}
 
 /* ---------- Footer ---------- */
 
@@ -412,4 +442,19 @@ a:hover { text-decoration: underline; }
 .chat-messages::-webkit-scrollbar-thumb, .directory-panel::-webkit-scrollbar-thumb {
   background: var(--border);
   border-radius: 4px;
+}
+
+/* ---------- Small screens ---------- */
+/* Kept at the end of the file so these overrides win by source order over the base rules above. */
+
+@media (max-width: 900px) {
+  .layout { grid-template-columns: 1fr; }
+  .chat-panel {
+    height: 60vh;
+    border-right: none;
+    border-bottom: 1px solid var(--border-soft);
+    position: static;
+  }
+  .directory-panel { height: auto; overflow: visible; }
+  .directory-toolbar { top: 65px; }
 }

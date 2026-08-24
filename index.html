@@ -47,10 +47,12 @@
         <p>Everything an OSINT researcher reaches for — people search, usernames, breach data, social media,
            images, geolocation, domains, dark web, crypto and more — curated in one directory, or just ask
            the concierge on the left.</p>
-        <input id="dirSearch" type="text" placeholder="Search tools (e.g. shodan, reverse image, breach, whois)" />
       </div>
 
-      <nav id="categoryPills" class="category-pills"></nav>
+      <div class="directory-toolbar">
+        <input id="dirSearch" type="text" placeholder="Search tools (e.g. shodan, reverse image, breach, whois)" />
+        <nav id="categoryPills" class="category-pills" aria-label="Tool categories"></nav>
+      </div>
 
       <div id="toolsGrid" class="tools-grid"></div>
     </section>
