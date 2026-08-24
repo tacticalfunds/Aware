@@ -92,8 +92,33 @@
       Your key is stored only in this browser's local storage and sent directly to Anthropic's API —
       never to any server of ours. Clear it any time.
     </p>
+
+    <details class="live-keys-section">
+      <summary>Live lookup API keys (optional)</summary>
+      <p class="modal-desc">
+        Without these, the concierge still runs live lookups on domains, IPs, and Bitcoin addresses
+        using free public APIs. Add your own keys below to unlock deeper lookups too — each is
+        optional and independent, stored only in this browser.
+      </p>
+
+      <label class="field-label" for="shodanKeyInput">Shodan API key</label>
+      <input id="shodanKeyInput" type="password" placeholder="for IP → exposed services/ports" autocomplete="off" />
+
+      <label class="field-label" for="virustotalKeyInput">VirusTotal API key</label>
+      <input id="virustotalKeyInput" type="password" placeholder="for domain/IP reputation" autocomplete="off" />
+
+      <label class="field-label" for="abuseipdbKeyInput">AbuseIPDB API key</label>
+      <input id="abuseipdbKeyInput" type="password" placeholder="for IP abuse reports" autocomplete="off" />
+
+      <label class="field-label" for="etherscanKeyInput">Etherscan API key</label>
+      <input id="etherscanKeyInput" type="password" placeholder="for ETH address balance" autocomplete="off" />
+
+      <label class="field-label" for="hibpKeyInput">Have I Been Pwned API key</label>
+      <input id="hibpKeyInput" type="password" placeholder="for email breach checks (paid key)" autocomplete="off" />
+    </details>
+
     <div class="modal-actions">
-      <button id="clearSettings" class="btn-secondary">Clear key</button>
+      <button id="clearSettings" class="btn-secondary">Clear all keys</button>
       <button id="saveSettings" class="btn-primary">Save</button>
     </div>
   </div>
@@ -101,6 +126,7 @@
 
 <script src="assets/js/tools-data.js"></script>
 <script src="assets/js/chatbot.js"></script>
+<script src="assets/js/live-lookup.js"></script>
 <script src="assets/js/main.js"></script>
 </body>
 </html>

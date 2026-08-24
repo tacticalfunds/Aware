@@ -5,7 +5,8 @@ const state = {
   searchTerm: "",
   apiKey: localStorage.getItem("aware_api_key") || "",
   model: localStorage.getItem("aware_model") || "claude-sonnet-5",
-  chatHistory: [] // Claude-format history for AI mode: {role, content}
+  chatHistory: [], // Claude-format history for AI mode: {role, content}
+  liveKeys: JSON.parse(localStorage.getItem("aware_live_keys") || "{}")
 };
 
 const els = {};
@@ -21,7 +22,10 @@ document.addEventListener("DOMContentLoaded", () => {
   updateModeBadge();
   pushBotMessage(
     `Welcome to **Aware** — a single concierge for the OSINT toolkit. I have ${OSINT_TOOLS_FLAT.length} tools ` +
-    `across ${OSINT_CATEGORIES.length} categories indexed. Tell me what you're investigating, or click a suggestion below.`,
+    `across ${OSINT_CATEGORIES.length} categories indexed. Tell me what you're investigating, or click a suggestion below.\n\n` +
+    `I can also run **live lookups** — drop an IP, domain, Bitcoin address, or email into the chat and I'll actually ` +
+    `query DNS, ipinfo.io, crt.sh, urlscan.io and blockchain.info for you (add your own Shodan/VirusTotal/AbuseIPDB/` +
+    `Etherscan/HIBP key in AI settings for more).`,
     []
   );
 });
@@ -44,6 +48,13 @@ function cacheEls() {
   els.saveSettings = document.getElementById("saveSettings");
   els.clearSettings = document.getElementById("clearSettings");
   els.suggestions = document.getElementById("chatSuggestions");
+  els.liveKeyInputs = {
+    shodan: document.getElementById("shodanKeyInput"),
+    virustotal: document.getElementById("virustotalKeyInput"),
+    abuseipdb: document.getElementById("abuseipdbKeyInput"),
+    etherscan: document.getElementById("etherscanKeyInput"),
+    hibp: document.getElementById("hibpKeyInput")
+  };
 }
 
 function renderStats() {
@@ -233,8 +244,8 @@ function wireChat() {
     "Investigate a person",
     "Trace a username",
     "Verify a photo",
-    "Look up a domain",
-    "Check an email for breaches",
+    "Live-check a domain: example.com",
+    "Live-check an IP: 8.8.8.8",
     "Trace a crypto wallet"
   ];
   els.suggestions.innerHTML = "";
@@ -252,6 +263,21 @@ function wireChat() {
 }
 
 async function handleUserQuery(text) {
+  const targets = extractTargets(text);
+  if (targets.length > 0) {
+    const loadingId = pushBotMessage(
+      `⚡ Running live lookups on ${targets.map(t => t.value).join(", ")}…`,
+      [],
+      true
+    );
+    try {
+      const results = await runLiveLookups(text, state.liveKeys);
+      replaceMessageRaw(loadingId, renderLiveBubble(results));
+    } catch (err) {
+      replaceMessage(loadingId, `Live lookup failed unexpectedly (${err.message}).`, []);
+    }
+  }
+
   if (state.apiKey) {
     const loadingId = pushBotMessage("…thinking", [], true);
     try {
@@ -314,6 +340,55 @@ function renderBotBubble(text, toolCards) {
   return `<div class="msg-text">${html}</div>${cards}`;
 }
 
+function replaceMessageRaw(id, html) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  el.classList.remove("loading");
+  el.innerHTML = html;
+  scrollChatToBottom();
+}
+
+function renderLiveBubble(results) {
+  if (results.length === 0) {
+    return `<div class="msg-text">Couldn't find a lookup target in that message.</div>`;
+  }
+
+  const byTarget = new Map();
+  for (const r of results) {
+    const key = `${r.target.type}:${r.target.value}`;
+    if (!byTarget.has(key)) byTarget.set(key, { target: r.target, items: [] });
+    byTarget.get(key).items.push(r);
+  }
+
+  let html = `<div class="live-lookup">`;
+  const skippedSources = new Set();
+
+  for (const { target, items } of byTarget.values()) {
+    html += `<div class="live-target"><span class="live-target-type">${escapeHtml(target.type)}</span> ${escapeHtml(target.value)}</div>`;
+    for (const item of items) {
+      if (item.status === "skipped") {
+        skippedSources.add(item.source);
+        continue;
+      }
+      const cls = item.status === "ok" ? "live-ok" : item.status === "empty" ? "live-empty" : "live-error";
+      const body =
+        item.status === "error"
+          ? `Couldn't reach it directly — likely blocked by CORS, a missing/invalid key, or a rate limit. (${escapeHtml(item.error)})`
+          : escapeHtml(item.summary || "");
+      html += `
+        <div class="live-source ${cls}">
+          <div class="live-source-name">${escapeHtml(item.source)}</div>
+          <div class="live-source-body">${body.replace(/\n/g, "<br>")}</div>
+        </div>`;
+    }
+  }
+  if (skippedSources.size > 0) {
+    html += `<div class="live-skip-hint">Add a key for ${[...skippedSources].map(escapeHtml).join(", ")} in AI settings to unlock deeper lookups on this target.</div>`;
+  }
+  html += `</div>`;
+  return html;
+}
+
 function mdLiteToHtml(text) {
   return escapeHtml(text)
     .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
@@ -337,6 +412,9 @@ function wireSettings() {
   els.settingsBtn.addEventListener("click", () => {
     els.apiKeyInput.value = state.apiKey;
     els.modelSelect.value = state.model;
+    for (const [name, input] of Object.entries(els.liveKeyInputs)) {
+      input.value = state.liveKeys[name] || "";
+    }
     els.settingsModal.classList.add("open");
   });
   els.closeSettings.addEventListener("click", () => els.settingsModal.classList.remove("open"));
@@ -348,19 +426,33 @@ function wireSettings() {
     state.model = els.modelSelect.value;
     localStorage.setItem("aware_api_key", state.apiKey);
     localStorage.setItem("aware_model", state.model);
+
+    const liveKeys = {};
+    for (const [name, input] of Object.entries(els.liveKeyInputs)) {
+      const val = input.value.trim();
+      if (val) liveKeys[name] = val;
+    }
+    state.liveKeys = liveKeys;
+    localStorage.setItem("aware_live_keys", JSON.stringify(liveKeys));
+
     els.settingsModal.classList.remove("open");
     updateModeBadge();
+    const addedLive = Object.keys(liveKeys).length;
     pushBotMessage(
-      state.apiKey
+      (state.apiKey
         ? `AI mode enabled with **${state.model}**. I'll now answer with free-form reasoning grounded in the tool directory.`
-        : "AI mode disabled. Back to local keyword matching.",
+        : "AI mode disabled. Back to local keyword matching.") +
+        (addedLive > 0 ? ` ${addedLive} live-lookup key(s) saved.` : ""),
       []
     );
   });
   els.clearSettings.addEventListener("click", () => {
     state.apiKey = "";
+    state.liveKeys = {};
     localStorage.removeItem("aware_api_key");
+    localStorage.removeItem("aware_live_keys");
     els.apiKeyInput.value = "";
+    for (const input of Object.values(els.liveKeyInputs)) input.value = "";
     updateModeBadge();
   });
 }
