@@ -9,7 +9,9 @@ const state = {
   // same investigation with the same findings and tool surface.
   agentHistory: [],
   liveKeys: JSON.parse(localStorage.getItem("aware_live_keys") || "{}"),
-  attachedImage: null // { media_type, data, name } — data is bare base64
+  attachedImage: null, // { media_type, data, name } — data is bare base64
+  fontStep: Math.min(5, Math.max(0, parseInt(localStorage.getItem("aware_font_step") ?? "1", 10) || 0)),
+  chatWidth: localStorage.getItem("aware_chat_width") === "wide" ? "wide" : "normal"
 };
 
 const els = {};
@@ -25,6 +27,7 @@ document.addEventListener("DOMContentLoaded", () => {
   wireDirectory();
   wireChat();
   wireSettings();
+  wireChatPrefs();
   updateModeBadge();
   pushBotMessage(
     `Welcome to **Aware** — a single concierge for the OSINT toolkit. I have ${OSINT_TOOLS_FLAT.length} tools ` +
@@ -60,6 +63,9 @@ function cacheEls() {
   els.attachThumb = document.getElementById("attachThumb");
   els.attachName = document.getElementById("attachName");
   els.attachRemove = document.getElementById("attachRemove");
+  els.fontDown = document.getElementById("fontDown");
+  els.fontUp = document.getElementById("fontUp");
+  els.widenChat = document.getElementById("widenChat");
   els.liveKeyInputs = {
     shodan: document.getElementById("shodanKeyInput"),
     virustotal: document.getElementById("virustotalKeyInput"),
@@ -816,6 +822,43 @@ function wireSettings() {
     for (const input of Object.values(els.liveKeyInputs)) input.value = "";
     updateModeBadge();
   });
+}
+
+/* ---------------- Chat readability ---------------- */
+
+const FONT_STEPS = [13, 14, 16, 18, 20, 22];
+const CHAT_WIDTHS = { normal: "460px", wide: "40vw" };
+
+/**
+ * Text size and chat width, persisted per browser. Both drive CSS variables so
+ * every chat element scales from one place rather than each needing its own rule.
+ */
+function applyChatPrefs() {
+  const root = document.documentElement;
+  root.style.setProperty("--chat-fs", `${FONT_STEPS[state.fontStep]}px`);
+  root.style.setProperty("--chat-w", CHAT_WIDTHS[state.chatWidth] || CHAT_WIDTHS.normal);
+  if (els.fontDown) els.fontDown.disabled = state.fontStep === 0;
+  if (els.fontUp) els.fontUp.disabled = state.fontStep === FONT_STEPS.length - 1;
+  if (els.widenChat) els.widenChat.classList.toggle("active", state.chatWidth === "wide");
+}
+
+function wireChatPrefs() {
+  const step = delta => {
+    state.fontStep = Math.min(FONT_STEPS.length - 1, Math.max(0, state.fontStep + delta));
+    localStorage.setItem("aware_font_step", String(state.fontStep));
+    applyChatPrefs();
+  };
+  els.fontDown.addEventListener("click", () => step(-1));
+  els.fontUp.addEventListener("click", () => step(1));
+  els.widenChat.addEventListener("click", () => {
+    state.chatWidth = state.chatWidth === "wide" ? "normal" : "wide";
+    localStorage.setItem("aware_chat_width", state.chatWidth);
+    applyChatPrefs();
+    // The sticky toolbar's height depends on how the pills wrap, which changes
+    // with the directory column's new width.
+    syncToolbarOffset();
+  });
+  applyChatPrefs();
 }
 
 function updateModeBadge() {

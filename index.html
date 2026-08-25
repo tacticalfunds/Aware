@@ -27,7 +27,14 @@
     <section class="chat-panel">
       <div class="chat-header">
         <span>Concierge</span>
-        <span id="modeBadge" class="mode-badge">Local mode</span>
+        <div class="chat-header-right">
+          <div class="font-size-control" role="group" aria-label="Text size">
+            <button type="button" id="fontDown" class="font-btn" aria-label="Smaller text" title="Smaller text">A−</button>
+            <button type="button" id="fontUp" class="font-btn" aria-label="Larger text" title="Larger text">A+</button>
+          </div>
+          <button type="button" id="widenChat" class="font-btn wide-btn" aria-label="Toggle wide chat" title="Toggle wide chat">⇔</button>
+          <span id="modeBadge" class="mode-badge">Local mode</span>
+        </div>
       </div>
 
       <div id="chatMessages" class="chat-messages" aria-live="polite"></div>
