@@ -15,6 +15,26 @@
  */
 
 const AGENT_MAX_STEPS = 12;
+const AGENT_MAX_HISTORY = 40;
+
+/**
+ * Caps conversation growth without corrupting it. A tool_use block must always keep
+ * the tool_result that answers it, so this only ever cuts at a plain user turn —
+ * never between a tool call and its result, and never leaving a leading tool_result.
+ */
+function trimAgentHistory(messages) {
+  while (messages.length > AGENT_MAX_HISTORY) {
+    const cut = messages.findIndex(
+      (m, i) =>
+        i > 0 &&
+        m.role === "user" &&
+        (typeof m.content === "string" ||
+          !m.content.some(b => b.type === "tool_result"))
+    );
+    if (cut <= 0) break; // nothing safe to drop
+    messages.splice(0, cut);
+  }
+}
 
 /* ---------- tool definitions handed to the model ---------- */
 
@@ -207,11 +227,26 @@ Method:
   and hand the user specific named tools with URLs, plus what to search for in each.
 - Say plainly when a lookup fails or returns nothing. Never present an inference as
   a confirmed fact, and never invent a result you did not get from a tool.
+- Never imply you can run something you can't. If a capability needs a key the user
+  hasn't set, or has no API at all, say that in one line the first time it comes up —
+  don't describe what a tool "would" return as if you had run it. If the user then
+  says "you do it", the honest answer is which specific thing is missing (a named API
+  key, or that no browser-callable API exists for it), not a general apology.
+- You keep the conversation. Follow-ups continue the same investigation — when the
+  user adds context or asks for more, act on it with your tools rather than restating
+  a list of links.
 
 Finish with a short report: what you established, what you couldn't, your confidence,
 and the concrete next steps a human should take by hand.
 
-Scope limits — these are firm:
+Scope limits — these are firm, and deliberately narrow. Ordinary OSINT is the job;
+don't hedge or ask for justification on routine requests.
+
+- When the user is investigating their own asset — their own phone number, email,
+  domain, account or vehicle — that is a self-audit, which is entirely legitimate and
+  a common reason people use OSINT tools. Help directly and fully: run what you have,
+  and tell them what's exposed and how to get it removed. Do not ask them to justify
+  looking up their own number.
 - Geolocating a photo (working out where it was taken) is core OSINT work and is fine.
 - Do NOT extract, enumerate, or run lookups on identifiers belonging to uninvolved
   people who merely appear in a scene — in particular, do not read off the licence
@@ -235,14 +270,19 @@ Scope limits — these are firm:
  * @param {object} opts.liveKeys
  * @param {(ev:object)=>void} opts.onEvent  step callback for the UI trace
  */
-async function runInvestigation({ apiKey, model, task, image, liveKeys = {}, onEvent = () => {} }) {
+async function runInvestigation({ apiKey, model, task, image, liveKeys = {}, onEvent = () => {}, history = [] }) {
   const content = [];
   if (image) {
     content.push({ type: "image", source: { type: "base64", media_type: image.media_type, data: image.data } });
   }
   content.push({ type: "text", text: task });
 
-  const messages = [{ role: "user", content }];
+  // `history` is the caller's live conversation array — appending to it directly is
+  // what lets follow-up turns ("it's my own number", "now check X") keep the earlier
+  // findings and the tool surface, instead of restarting cold every message.
+  const messages = history;
+  messages.push({ role: "user", content });
+  trimAgentHistory(messages);
 
   // Haiku 4.5 predates adaptive thinking and the effort control; sending either 400s.
   const supportsThinking = !/haiku/i.test(model);

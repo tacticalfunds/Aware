@@ -1,12 +1,10 @@
 /**
  * Aware OSINT Concierge — a chat interface over the OSINT_TOOLS_FLAT directory.
  *
- * Two modes:
- *  - Local mode (default, no key required): keyword/intent matching against the
- *    tool database plus a small library of pre-written investigation workflows.
- *  - AI mode (optional): if the user supplies their own Anthropic API key, we
- *    call the Claude API directly from the browser so responses become free-form
- *    natural language, grounded on the same tool database as context.
+ * This is the no-key path: keyword/intent matching against the tool database plus a
+ * small library of pre-written investigation workflows. When the user supplies an
+ * Anthropic API key, every turn goes to the agent in agent.js instead — that path
+ * has the actual tools, so there is deliberately no second, tool-less AI chat mode.
  */
 
 const STOPWORDS = new Set([
@@ -270,55 +268,4 @@ function buildLocalResponse(query) {
     text: "I couldn't match that to anything specific. Try naming what you have (an email, username, phone, domain, image, crypto address...) or what you're trying to do (verify, locate, trace, background check). You can also browse categories in the directory below.",
     toolCards: []
   };
-}
-
-/**
- * AI mode: calls the Claude API directly from the browser using a
- * user-supplied API key (never sent anywhere except the official Anthropic
- * endpoint, and only ever stored in this browser's localStorage).
- */
-async function askClaude(apiKey, model, history, userQuery) {
-  const candidates = searchTools(userQuery, 20);
-  const contextLines = candidates
-    .map(t => `- ${t.name} (${t.category}) — ${t.url} — ${t.desc}`)
-    .join("\n");
-
-  const systemPrompt = `You are the Aware OSINT concierge, embedded in an OSINT tools directory website.
-Help the user pick the right open-source-intelligence tools and outline a short investigative workflow.
-Only recommend tools that are legitimate and used for lawful research, journalism, security research, or
-personal safety — decline anything about stalking, harassment, or targeting private individuals without
-a lawful basis, and say so briefly.
-When relevant, ground your answer in this subset of the site's tool directory (cite tool names and URLs
-as markdown links). If nothing here fits, answer from general OSINT knowledge instead.
-
-Relevant tools for this query:
-${contextLines || "(no close matches found in the directory)"}
-
-Keep answers concise (under ~180 words) and practical.`;
-
-  const messages = [...history, { role: "user", content: userQuery }];
-
-  const res = await fetch("https://api.anthropic.com/v1/messages", {
-    method: "POST",
-    headers: {
-      "content-type": "application/json",
-      "x-api-key": apiKey,
-      "anthropic-version": "2023-06-01",
-      "anthropic-dangerous-direct-browser-access": "true"
-    },
-    body: JSON.stringify({
-      model,
-      max_tokens: 600,
-      system: systemPrompt,
-      messages
-    })
-  });
-
-  if (!res.ok) {
-    const errBody = await res.text().catch(() => "");
-    throw new Error(`Claude API error ${res.status}: ${errBody.slice(0, 200)}`);
-  }
-  const data = await res.json();
-  const text = (data.content || []).map(b => b.text || "").join("").trim();
-  return text || "(empty response)";
 }

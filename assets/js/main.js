@@ -5,7 +5,9 @@ const state = {
   searchTerm: "",
   apiKey: localStorage.getItem("aware_api_key") || "",
   model: localStorage.getItem("aware_model") || "claude-sonnet-5",
-  chatHistory: [], // Claude-format history for AI mode: {role, content}
+  // Claude-format conversation the agent appends to, so follow-up turns continue the
+  // same investigation with the same findings and tool surface.
+  agentHistory: [],
   liveKeys: JSON.parse(localStorage.getItem("aware_live_keys") || "{}"),
   attachedImage: null // { media_type, data, name } — data is bare base64
 };
@@ -426,16 +428,20 @@ function clearAttachment() {
 }
 
 async function handleUserQuery(text) {
-  // An image, or an explicit investigate-style task, goes to the autonomous agent.
   const image = state.attachedImage;
-  const wantsAgent = !!image || looksLikeInvestigation(text);
 
-  if (wantsAgent) {
+  // In AI mode every turn goes to the agent. Routing only "investigate"-shaped
+  // messages there used to drop follow-ups into a chat path that had no tools at
+  // all, so "it's my own number" or "you do it" got a toolless answer that claimed
+  // it couldn't run anything — while the tools sat right there unused.
+  if (state.apiKey) {
     clearAttachment();
-    if (state.apiKey) {
-      await runAgentTask(text, image);
-      return;
-    }
+    await runAgentTask(text, image);
+    return;
+  }
+
+  if (image || looksLikeInvestigation(text)) {
+    clearAttachment();
     pushBotMessage(
       "Running an investigation on my own needs an **Anthropic API key** — I have to reason about the " +
       "task, choose tools, read results and decide what to check next, which local keyword matching " +
@@ -462,25 +468,6 @@ async function handleUserQuery(text) {
     }
   }
 
-  if (state.apiKey) {
-    const loadingId = pushBotMessage("…thinking", [], true);
-    try {
-      const reply = await askClaude(state.apiKey, state.model, state.chatHistory, text);
-      state.chatHistory.push({ role: "user", content: text });
-      state.chatHistory.push({ role: "assistant", content: reply });
-      if (state.chatHistory.length > 20) state.chatHistory.splice(0, state.chatHistory.length - 20);
-      replaceMessage(loadingId, reply, searchTools(text, 4));
-    } catch (err) {
-      replaceMessage(
-        loadingId,
-        `AI mode hit an error (${err.message}). Falling back to local matching for this one:`,
-        []
-      );
-      const local = buildLocalResponse(text);
-      pushBotMessage(local.text, local.toolCards);
-    }
-    return;
-  }
   const local = buildLocalResponse(text);
   pushBotMessage(local.text, local.toolCards);
 }
@@ -504,7 +491,8 @@ async function runAgentTask(text, image) {
       task: text || "Investigate this image: work out where it was taken and anything else verifiable.",
       image: image ? { media_type: image.media_type, data: image.data } : null,
       liveKeys: state.liveKeys,
-      onEvent: ev => trace.push(ev)
+      onEvent: ev => trace.push(ev),
+      history: state.agentHistory
     });
   } catch (err) {
     trace.push({ type: "error", text: err.message || String(err) });

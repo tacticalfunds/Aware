@@ -79,11 +79,11 @@ reads the results, follows the leads, and writes up what it found. Attach an ima
 (button or paste) and it analyses that too. Every step is shown live in the chat —
 reasoning, each tool call and its result — so nothing is a black box.
 
-It routes to the agent when you attach an image, or when the task reads as an
-instruction to go and do something ("investigate…", "look into…", "run a check on…").
-Requires an Anthropic API key: it genuinely needs to reason about the task and decide
-what to check next, which keyword matching can't do. Without a key it says so and
-falls back to direct lookups plus tool recommendations.
+**With an API key set, the agent handles every turn** — there is deliberately no
+second, tool-less chat mode to fall into. Follow-ups continue the same investigation
+with the same findings and the same tools, so "it's my own number", "now check the
+domain too" or "you do it" all act rather than restating links. Without a key it says
+so plainly and falls back to direct lookups plus tool recommendations.
 
 Its tools are the live-lookup functions plus a search over the local directory — so
 for the ~3,400 sources with no browser-callable API it hands back specific named
