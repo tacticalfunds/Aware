@@ -4,9 +4,9 @@
   "private": true,
   "description": "Aware — a single AI-concierge website over an OSINT tool directory.",
   "scripts": {
-    "start": "serve -s . -l ${PORT:-3000}"
+    "start": "node server.js"
   },
-  "dependencies": {
-    "serve": "^14.2.3"
+  "engines": {
+    "node": ">=18"
   }
 }

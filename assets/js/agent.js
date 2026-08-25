@@ -144,6 +144,95 @@ const AGENT_TOOLS = [
     }
   },
   {
+    name: "domain_registration",
+    description: "Registration data for a domain via RDAP (the machine-readable successor to WHOIS): registrar, creation/expiry dates, status flags and contacts where published. Use to establish how old a domain is and who registered it — a domain registered days ago is a strong phishing/scam signal.",
+    input_schema: {
+      type: "object",
+      properties: { domain: { type: "string" } },
+      required: ["domain"]
+    }
+  },
+  {
+    name: "wayback_history",
+    description: "What the Wayback Machine holds for a URL — how far back snapshots go and how many there are. Use to see what a site looked like before it changed, or to date when it first appeared.",
+    input_schema: {
+      type: "object",
+      properties: { url: { type: "string", description: "Domain or full URL" } },
+      required: ["url"]
+    }
+  },
+  {
+    name: "github_lookup",
+    description: "GitHub account intelligence: profile (name, bio, company, location, email if public, join date) and recent repositories, or a user search by name/handle. A very productive pivot for a username or developer.",
+    input_schema: {
+      type: "object",
+      properties: {
+        username: { type: "string", description: "Exact account to profile" },
+        search: { type: "string", description: "Search users instead, by name or partial handle" }
+      }
+    }
+  },
+  {
+    name: "reddit_lookup",
+    description: "Reddit account age and karma for a username, or a site-wide search for a term. Useful for username pivots and for finding mentions of a phone number, domain or scam.",
+    input_schema: {
+      type: "object",
+      properties: {
+        username: { type: "string" },
+        search: { type: "string" }
+      }
+    }
+  },
+  {
+    name: "web_mentions",
+    description: "Searches Hacker News (via Algolia) and Wikipedia for a term. Use to find public discussion, reports or reference material about a company, domain, person or scam.",
+    input_schema: {
+      type: "object",
+      properties: { query: { type: "string" } },
+      required: ["query"]
+    }
+  },
+  {
+    name: "geocode",
+    description: "Turns a place name or address into coordinates, or coordinates back into an address (OpenStreetMap Nominatim). Use when geolocating a photo or confirming an address.",
+    input_schema: {
+      type: "object",
+      properties: {
+        place: { type: "string", description: "Place name or address" },
+        lat: { type: "string" },
+        lon: { type: "string" }
+      }
+    }
+  },
+  {
+    name: "vin_decode",
+    description: "Decodes a 17-character VIN via the free official NHTSA database: make, model, year, plant, body type, engine. Works for vehicles sold in the US.",
+    input_schema: {
+      type: "object",
+      properties: { vin: { type: "string" } },
+      required: ["vin"]
+    }
+  },
+  {
+    name: "request_manual_lookup",
+    description:
+      "Hand a lookup to the user for a tool you cannot call yourself — which is most of the 3,400-tool directory (sites with no API, or that need a login, or block automated access). " +
+      "Build the exact prefilled URL so they only have to click it, tell them precisely what to copy back, and the conversation pauses until they paste it. " +
+      "Their pasted text comes back to you as this tool's result, so continue the analysis from it. " +
+      "Use this instead of ending your turn with a list of links — a link the user has to figure out how to use is not a completed step. " +
+      "Prefer your own callable tools first; this is for what they cannot cover.",
+    input_schema: {
+      type: "object",
+      properties: {
+        tool_name: { type: "string", description: "Name of the tool, ideally exactly as it appears in the directory." },
+        url: { type: "string", description: "Exact URL, with the query prefilled wherever the site supports it (e.g. https://www.bing.com/search?q=%22914-426-2906%22)." },
+        what_to_copy: { type: "string", description: "Precisely what to copy back — which field, section or table. Be specific." },
+        why: { type: "string", description: "One line on what this establishes for the investigation." }
+      },
+      required: ["tool_name", "url", "what_to_copy"]
+    }
+  },
+  {
     name: "search_tool_directory",
     description: "Search this site's directory of 3,400+ OSINT tools by keyword. Use this for anything you cannot query directly — reverse image search, people search, geolocation references, plate/VIN databases, social media — and cite the specific tools back to the user so they can run them by hand.",
     input_schema: {
@@ -159,7 +248,7 @@ const AGENT_TOOLS = [
 
 /* ---------- executing a tool call ---------- */
 
-async function executeAgentTool(name, input, liveKeys) {
+async function executeAgentTool(name, input, liveKeys, ctx = {}) {
   const needKey = k => {
     if (!liveKeys[k]) throw new Error(`No ${k} API key configured — the user can add one in AI settings.`);
     return liveKeys[k];
@@ -197,6 +286,129 @@ async function executeAgentTool(name, input, liveKeys) {
       }
       return parts.join("\n\n");
     }
+    case "domain_registration": {
+      const d = await Proxy.lookup("rdap_domain", { domain: input.domain });
+      const ev = Object.fromEntries((d.events || []).map(e => [e.eventAction, (e.eventDate || "").slice(0, 10)]));
+      const registrar = (d.entities || []).find(e => (e.roles || []).includes("registrar"));
+      const regName = registrar?.vcardArray?.[1]?.find(f => f[0] === "fn")?.[3];
+      return [
+        `Domain: ${d.ldhName || input.domain}`,
+        regName && `Registrar: ${regName}`,
+        ev.registration && `Registered: ${ev.registration}`,
+        ev.expiration && `Expires: ${ev.expiration}`,
+        ev["last changed"] && `Last changed: ${ev["last changed"]}`,
+        (d.status || []).length && `Status: ${d.status.join(", ")}`,
+        (d.nameservers || []).length && `Nameservers: ${d.nameservers.map(n => n.ldhName).join(", ")}`
+      ].filter(Boolean).join("\n");
+    }
+    case "wayback_history": {
+      const rows = await Proxy.lookup("wayback_cdx", { url: input.url, limit: 25 });
+      if (!Array.isArray(rows) || rows.length < 2) return "No Wayback Machine snapshots found.";
+      const data = rows.slice(1); // first row is the column header
+      const stamp = s => `${s.slice(0,4)}-${s.slice(4,6)}-${s.slice(6,8)}`;
+      const first = data[0][1], last = data[data.length - 1][1];
+      return `${data.length} snapshot(s) sampled. Earliest: ${stamp(first)}. Most recent: ${stamp(last)}.\n` +
+        `Browse: https://web.archive.org/web/*/${input.url}`;
+    }
+    case "github_lookup": {
+      if (input.search) {
+        const r = await Proxy.lookup("github_search_users", { q: input.search });
+        if (!r.items?.length) return "No GitHub users matched.";
+        return r.items.map(u => `${u.login} — https://github.com/${u.login}`).join("\n");
+      }
+      const u = await Proxy.lookup("github_user", { username: input.username });
+      const repos = await Proxy.lookup("github_user_repos", { username: input.username }).catch(() => []);
+      return [
+        `Account: ${u.login}${u.name ? ` (${u.name})` : ""}`,
+        u.bio && `Bio: ${u.bio}`,
+        u.company && `Company: ${u.company}`,
+        u.location && `Location: ${u.location}`,
+        u.email && `Public email: ${u.email}`,
+        u.blog && `Link: ${u.blog}`,
+        `Joined: ${(u.created_at || "").slice(0, 10)} · ${u.public_repos} repos · ${u.followers} followers`,
+        Array.isArray(repos) && repos.length &&
+          `Recent repos: ${repos.slice(0, 8).map(r => r.name).join(", ")}`
+      ].filter(Boolean).join("\n");
+    }
+    case "reddit_lookup": {
+      if (input.search) {
+        const r = await Proxy.lookup("reddit_search", { q: input.search });
+        const posts = r?.data?.children || [];
+        if (!posts.length) return "No Reddit posts matched.";
+        return posts.slice(0, 8).map(c =>
+          `r/${c.data.subreddit}: ${c.data.title} — https://reddit.com${c.data.permalink}`).join("\n");
+      }
+      const r = await Proxy.lookup("reddit_user", { username: input.username });
+      const d = r?.data;
+      if (!d) return "No such Reddit account.";
+      return [
+        `u/${d.name}`,
+        `Created: ${new Date(d.created_utc * 1000).toISOString().slice(0, 10)}`,
+        `Karma: ${d.link_karma} post / ${d.comment_karma} comment`,
+        d.is_employee && "Reddit employee account"
+      ].filter(Boolean).join("\n");
+    }
+    case "web_mentions": {
+      const [hn, wiki] = await Promise.all([
+        Proxy.lookup("hackernews", { q: input.query }).catch(() => null),
+        Proxy.lookup("wikipedia", { q: input.query }).catch(() => null)
+      ]);
+      const parts = [];
+      const hits = hn?.hits?.filter(h => h.title) || [];
+      if (hits.length) {
+        parts.push("Hacker News:\n" + hits.slice(0, 5).map(h =>
+          `- ${h.title} (${(h.created_at || "").slice(0, 10)}) https://news.ycombinator.com/item?id=${h.objectID}`).join("\n"));
+      }
+      const w = wiki?.query?.search || [];
+      if (w.length) {
+        parts.push("Wikipedia:\n" + w.slice(0, 5).map(a =>
+          `- ${a.title} — https://en.wikipedia.org/wiki/${encodeURIComponent(a.title.replace(/ /g, "_"))}`).join("\n"));
+      }
+      return parts.length ? parts.join("\n\n") : "No mentions found on Hacker News or Wikipedia.";
+    }
+    case "geocode": {
+      const r = await Proxy.lookup("nominatim",
+        input.lat && input.lon ? { lat: input.lat, lon: input.lon } : { q: input.place });
+      if (input.lat && input.lon) {
+        return r.display_name ? `${r.display_name}\n(${r.lat}, ${r.lon})` : "No address found for those coordinates.";
+      }
+      if (!Array.isArray(r) || !r.length) return "No location matched.";
+      return r.slice(0, 5).map(m => `${m.display_name} — ${m.lat}, ${m.lon}`).join("\n");
+    }
+    case "vin_decode": {
+      const r = await Proxy.lookup("nhtsa_vin", { vin: input.vin });
+      const v = r?.Results?.[0];
+      if (!v) return "No VIN data returned.";
+      const f = [
+        v.ErrorText && !/^0/.test(v.ErrorCode) && `Note: ${v.ErrorText}`,
+        v.Make && `Make: ${v.Make}`,
+        v.Model && `Model: ${v.Model}`,
+        v.ModelYear && `Year: ${v.ModelYear}`,
+        v.BodyClass && `Body: ${v.BodyClass}`,
+        v.EngineCylinders && `Engine: ${v.EngineCylinders} cyl${v.DisplacementL ? ` ${v.DisplacementL}L` : ""}`,
+        v.FuelTypePrimary && `Fuel: ${v.FuelTypePrimary}`,
+        v.PlantCity && `Assembly plant: ${[v.PlantCity, v.PlantState, v.PlantCountry].filter(Boolean).join(", ")}`,
+        v.Manufacturer && `Manufacturer: ${v.Manufacturer}`
+      ].filter(Boolean);
+      return f.length ? f.join("\n") : "VIN decoded but no fields populated — check the VIN is 17 characters.";
+    }
+    case "request_manual_lookup": {
+      if (!ctx.onManualRequest) {
+        return "No interactive channel available, so this lookup can't be handed to the user right now.";
+      }
+      // Resolves when the user pastes results or skips — this is what turns a
+      // dead-end link into a step the investigation can actually continue from.
+      const reply = await ctx.onManualRequest({
+        tool_name: input.tool_name,
+        url: input.url,
+        what_to_copy: input.what_to_copy,
+        why: input.why || ""
+      });
+      if (reply && reply.skipped) {
+        return `The user skipped this lookup${reply.note ? `: ${reply.note}` : "."} Continue without it and note it as unchecked.`;
+      }
+      return `Results the user pasted from ${input.tool_name}:\n\n${reply.text}`;
+    }
     case "search_tool_directory": {
       const hits = searchTools(input.query, input.limit || 8);
       if (!hits.length) return "No matching tools in the directory.";
@@ -214,9 +426,30 @@ const AGENT_SYSTEM = `You are the Aware OSINT investigator: an autonomous resear
 The user gives you an investigative task, sometimes with an image. Work it yourself:
 plan, call your tools, read what comes back, follow the leads, and report.
 
+Structure every investigation in these four phases, using these exact headings so the
+interface can render them:
+
+**Plan** — what specifically you are trying to establish. Two or three lines, not an essay.
+
+**Tools** — name the exact tools you're using and why. Name them as they appear in the
+directory when you're citing directory entries, and say plainly which ones you can run
+yourself versus which need the user.
+
+**Findings** — the results. Put each concrete extracted fact in a blockquote so it stands
+out from your commentary:
+> Registrar: NameCheap, registered 2026-08-02 (11 days old)
+Follow each block with what it means for the investigation.
+
+**Assessment** — what you established, what you couldn't, your confidence in each, and the
+concrete next step. Never pad this with what you would have found.
+
 Method:
-- Start by stating briefly what you're going to check, then use tools. Don't ask
-  permission between steps — the user has already asked you to investigate.
+- Run your own tools first and actually run them — don't describe what they'd return.
+- For anything you can't call, use request_manual_lookup: build the exact prefilled URL,
+  say precisely what to copy back, and the conversation pauses for their paste. Do not
+  end a turn with a bare list of links; that pushes the work back onto the user, which
+  is the thing this tool exists to avoid.
+- Don't ask permission between steps — the user has already asked you to investigate.
 - Pull identifiers out of the task yourself (domains, IPs, wallet addresses, emails)
   and look them up. If an image is attached, describe what you can actually see in
   it that is investigatively useful: signage, languages, architecture, road markings,
@@ -270,7 +503,7 @@ don't hedge or ask for justification on routine requests.
  * @param {object} opts.liveKeys
  * @param {(ev:object)=>void} opts.onEvent  step callback for the UI trace
  */
-async function runInvestigation({ apiKey, model, task, image, liveKeys = {}, onEvent = () => {}, history = [] }) {
+async function runInvestigation({ apiKey, model, task, image, liveKeys = {}, onEvent = () => {}, history = [], onManualRequest = null }) {
   const content = [];
   if (image) {
     content.push({ type: "image", source: { type: "base64", media_type: image.media_type, data: image.data } });
@@ -342,7 +575,7 @@ async function runInvestigation({ apiKey, model, task, image, liveKeys = {}, onE
     const results = await Promise.all(calls.map(async call => {
       onEvent({ type: "tool_call", name: call.name, input: call.input });
       try {
-        const out = await executeAgentTool(call.name, call.input, liveKeys);
+        const out = await executeAgentTool(call.name, call.input, liveKeys, { onManualRequest });
         onEvent({ type: "tool_result", name: call.name, ok: true, text: out });
         return { type: "tool_result", tool_use_id: call.id, content: String(out || "(no data)") };
       } catch (err) {

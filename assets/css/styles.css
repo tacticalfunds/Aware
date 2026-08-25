@@ -257,6 +257,63 @@ a { color: var(--accent); text-decoration: none; }
   line-height: 1.5;
 }
 
+/* Human-in-the-loop handoff card */
+
+.manual-request {
+  border: 1px solid var(--accent);
+  background: var(--accent-soft);
+  border-radius: var(--radius-sm);
+  padding: 12px;
+  margin: 8px 0;
+}
+.manual-request.resolved {
+  border-color: var(--border);
+  background: var(--bg-card);
+  opacity: 0.7;
+}
+.manual-head { font-size: 12px; font-weight: 600; color: var(--accent-strong); margin-bottom: 6px; }
+.manual-tool { font-size: 14px; font-weight: 600; margin-bottom: 2px; }
+.manual-why { font-size: 12.5px; color: var(--text-dim); margin-bottom: 8px; line-height: 1.45; }
+.manual-open {
+  display: inline-block;
+  background: var(--accent);
+  color: #06201d;
+  font-weight: 600;
+  font-size: 13px;
+  padding: 7px 13px;
+  border-radius: var(--radius-sm);
+  margin-bottom: 8px;
+}
+@media (hover: hover) {
+  .manual-open:hover { background: var(--accent-strong); text-decoration: none; }
+}
+.manual-copy { font-size: 12.5px; color: var(--text-dim); line-height: 1.5; margin-bottom: 8px; }
+.manual-input {
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  color: var(--text);
+  border-radius: var(--radius-sm);
+  padding: 8px 10px;
+  font-size: 13px;
+  font-family: inherit;
+  resize: vertical;
+}
+.manual-input:focus { outline: none; border-color: var(--accent); }
+.manual-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 8px; }
+
+/* Phase headings inside the agent's write-up */
+.trace-text strong { color: var(--accent-strong); }
+.trace-text blockquote {
+  margin: 6px 0;
+  padding: 6px 10px;
+  border-left: 3px solid var(--accent);
+  background: var(--bg);
+  border-radius: 0 4px 4px 0;
+  color: var(--text);
+  font-size: 12.5px;
+}
+
 /* Image attachment */
 
 .msg-image {

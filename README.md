@@ -49,14 +49,20 @@ the folder with any static file server (e.g. `python3 -m http.server`).
   `/ (root)`. No build step needed.
 - **Netlify / Vercel** — drag the folder onto app.netlify.com/drop for an instant
   URL, or connect the GitHub repo for auto-deploy on push.
-- **Railway** — `package.json` + `railway.json` in this repo are there so Railway's
-  Nixpacks builder detects it as a Node app: `npm install` pulls in
-  [`serve`](https://www.npmjs.com/package/serve), then `npm start` runs
-  `serve -s . -l $PORT`, which Railway requires (it only routes traffic to a
-  process actually listening on the port it assigns — a plain static-file repo
-  with nothing listening won't get a working deployment). In Railway: New
-  Project → Deploy from GitHub repo → select this repo/branch → it auto-detects
-  and deploys → Settings → Networking → Generate Domain for a public URL.
+- **Railway (recommended)** — `npm start` runs `server.js`, which serves the site
+  *and* the lookup proxy, so the agent gets its full tool surface. No dependencies;
+  Node 18+ only. In Railway: New Project → Deploy from GitHub repo → select this
+  repo/branch → Settings → Networking → Generate Domain.
+
+  Optionally set any of these as Railway environment variables to enable the
+  credentialed sources for everyone using your deployment, without anyone pasting
+  keys into a browser: `SHODAN_KEY`, `VIRUSTOTAL_KEY`, `ABUSEIPDB_KEY`,
+  `ETHERSCAN_KEY`, `HIBP_KEY`, `VERIPHONE_KEY`, `IPQS_KEY`, `GITHUB_TOKEN`.
+  `GET /api/sources` reports which are configured.
+
+Static hosting (GitHub Pages, Netlify drop) still works, but without `server.js`
+there's no proxy — the agent falls back to the handful of CORS-friendly sources plus
+the manual handoff, and the mode badge drops the "· proxy" suffix.
 
 ## How the chatbot works
 
@@ -85,10 +91,39 @@ with the same findings and the same tools, so "it's my own number", "now check t
 domain too" or "you do it" all act rather than restating links. Without a key it says
 so plainly and falls back to direct lookups plus tool recommendations.
 
-Its tools are the live-lookup functions plus a search over the local directory — so
-for the ~3,400 sources with no browser-callable API it hands back specific named
-tools and what to search for in each. Implementation in `assets/js/agent.js`
-(Claude tool-use loop, capped at 12 steps to bound cost).
+Every investigation is structured in four phases the agent is instructed to follow —
+**Plan**, **Tools** (naming which it runs itself vs. which need you), **Findings**
+(each extracted fact in a blockquote, rendered as a boxed callout), and
+**Assessment** (what's established, what isn't, confidence, next step).
+
+### How it covers 3,469 tools with ~20 callable ones
+
+Two mechanisms, because no single one covers the whole directory:
+
+**1. Server-side proxy — for anything with an API.** Most OSINT APIs send no CORS
+headers, so a browser physically cannot call them. `server.js` proxies a fixed list of
+sources, which unlocks registration data (RDAP), Wayback history, GitHub, Reddit,
+Wikipedia/HN, geocoding, the NHTSA VIN database and the keyed providers. It is **not**
+an open proxy: the client sends a source *name* and parameters, and the server builds
+the upstream URL itself from its own table — passing a raw URL through would be an SSRF
+hole. API keys can live in server env vars instead of every visitor's browser.
+
+**2. Human-in-the-loop handoff — for everything else.** The great majority of the
+directory is sites with no API, or that need a login, or that block automation. For
+those the agent calls `request_manual_lookup`: it builds the **exact prefilled URL**,
+states precisely what to copy back, and **the run pauses**. You click through, paste
+what you found, and that text returns to the agent as the tool's result so it continues
+the analysis. Skip is always available and gets recorded as unchecked.
+
+This is deliberately chosen over headless-browser scraping. Automating those sites is
+fragile (breaks on any layout change), gets blocked quickly, needs ~500MB RAM per
+Chromium instance on your host, and for many of them violates their terms of service —
+liability that lands on whoever runs the deployment. If you want it anyway, a commercial
+scraping API (Apify, ScrapingBee) is the saner route: add it as a source in `server.js`
+rather than driving a browser yourself.
+
+Implementation in `assets/js/agent.js` (Claude tool-use loop, capped at 12 steps to
+bound cost) and `assets/js/proxy.js`.
 
 **Scope limits, enforced in the agent's system prompt:** it will geolocate a photo —
 standard OSINT work — but it will not read the licence plates of uninvolved cars in a

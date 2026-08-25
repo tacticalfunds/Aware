@@ -16,6 +16,9 @@ const els = {};
 
 document.addEventListener("DOMContentLoaded", () => {
   cacheEls();
+  // Probe for the server-side proxy; when present it removes the CORS ceiling and
+  // may supply API keys, so the agent gets a much larger set of runnable tools.
+  Proxy.detect().then(ok => { if (ok) updateModeBadge(); });
   renderStats();
   renderCategoryPills();
   renderToolsGrid();
@@ -492,7 +495,8 @@ async function runAgentTask(text, image) {
       image: image ? { media_type: image.media_type, data: image.data } : null,
       liveKeys: state.liveKeys,
       onEvent: ev => trace.push(ev),
-      history: state.agentHistory
+      history: state.agentHistory,
+      onManualRequest: req => trace.requestManual(req)
     });
   } catch (err) {
     trace.push({ type: "error", text: err.message || String(err) });
@@ -528,7 +532,10 @@ function createTraceBubble() {
           add(`<details class="trace-thinking"><summary>Reasoning</summary><div>${mdLiteToHtml(ev.text)}</div></details>`);
           break;
         case "tool_call":
-          add(`<div class="trace-tool">⚙️ <strong>${escapeHtml(ev.name)}</strong> <code>${escapeHtml(JSON.stringify(ev.input))}</code></div>`);
+          // The handoff renders its own card right below with the same details —
+          // dumping the raw JSON too is just noise.
+          if (ev.name === "request_manual_lookup") break;
+          add(`<div class="trace-tool">⚙️ <strong>${escapeHtml(ev.name)}</strong> <code>${escapeHtml(truncate(JSON.stringify(ev.input), 140))}</code></div>`);
           break;
         case "tool_result":
           add(`<div class="trace-result ${ev.ok ? "ok" : "err"}">${ev.ok ? "✓" : "✗"} ${mdLiteToHtml(truncate(ev.text, 400))}</div>`);
@@ -543,6 +550,65 @@ function createTraceBubble() {
           add(`<div class="trace-result err">Error: ${escapeHtml(ev.text)}</div>`);
           break;
       }
+    },
+    /**
+     * Approach A, the human-in-the-loop handoff: for tools the agent can't call,
+     * it hands over a prefilled link and waits. Resolves with what the user pastes
+     * (or {skipped:true}), which the agent receives as the tool's result.
+     */
+    requestManual(req) {
+      status.textContent = "⏸ Waiting for you";
+      return new Promise(resolve => {
+        const card = document.createElement("div");
+        card.className = "manual-request";
+        card.innerHTML = `
+          <div class="manual-head">🙋 Your turn — I can't query this one directly</div>
+          <div class="manual-tool">${escapeHtml(req.tool_name)}</div>
+          ${req.why ? `<div class="manual-why">${escapeHtml(req.why)}</div>` : ""}
+          <a class="manual-open" href="${escapeHtml(req.url)}" target="_blank" rel="noopener noreferrer">
+            Open ${escapeHtml(req.tool_name)} ↗
+          </a>
+          <div class="manual-copy"><strong>Copy back:</strong> ${escapeHtml(req.what_to_copy)}</div>
+        `;
+        const ta = document.createElement("textarea");
+        ta.className = "manual-input";
+        ta.rows = 4;
+        ta.placeholder = "Paste what you found here, then Submit…";
+
+        const actions = document.createElement("div");
+        actions.className = "manual-actions";
+        const submit = document.createElement("button");
+        submit.type = "button";
+        submit.className = "btn-primary";
+        submit.textContent = "Submit results";
+        const skip = document.createElement("button");
+        skip.type = "button";
+        skip.className = "btn-secondary";
+        skip.textContent = "Skip this";
+
+        const done = value => {
+          ta.disabled = submit.disabled = skip.disabled = true;
+          card.classList.add("resolved");
+          status.textContent = "🔎 Investigating…";
+          resolve(value);
+        };
+        submit.addEventListener("click", () => {
+          const text = ta.value.trim();
+          if (!text) { ta.focus(); return; }
+          done({ text });
+        });
+        skip.addEventListener("click", () => done({ skipped: true }));
+        // Ctrl/Cmd+Enter submits, since pasted results are often multi-line.
+        ta.addEventListener("keydown", e => {
+          if ((e.metaKey || e.ctrlKey) && e.key === "Enter") submit.click();
+        });
+
+        actions.append(skip, submit);
+        card.append(ta, actions);
+        steps.appendChild(card);
+        scrollChatToBottom();
+        ta.focus();
+      });
     },
     finish() {
       status.textContent = "🔎 Investigation complete";
@@ -654,9 +720,32 @@ function renderLiveBubble(results) {
 }
 
 function mdLiteToHtml(text) {
-  return escapeHtml(text)
+  // Blockquote lines first, and merge runs of them into one block, so the agent's
+  // "> extracted fact" lines render as the boxed-out details they're meant to be.
+  const withQuotes = escapeHtml(text)
+    .split("\n")
+    .map(line => {
+      const m = line.match(/^&gt;\s?(.*)$/);
+      return m ? { quote: true, text: m[1] } : { quote: false, text: line };
+    })
+    .reduce((acc, cur) => {
+      const prev = acc[acc.length - 1];
+      if (cur.quote && prev?.quote) prev.text += "\n" + cur.text;
+      else acc.push({ ...cur });
+      return acc;
+    }, [])
+    .map(part =>
+      part.quote
+        ? `<blockquote>${part.text.replace(/\n/g, "<br>")}</blockquote>`
+        : part.text
+    )
+    .join("\n");
+
+  return withQuotes
     .replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>")
-    .replace(/\n/g, "<br>")
+    .replace(/\n(?!<blockquote|<\/blockquote)/g, "<br>")
+    .replace(/<br>(<blockquote)/g, "$1")
+    .replace(/(<\/blockquote>)<br>/g, "$1")
     .replace(/\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g, '<a href="$2" target="_blank" rel="noopener noreferrer">$1</a>');
 }
 
@@ -722,6 +811,10 @@ function wireSettings() {
 }
 
 function updateModeBadge() {
-  els.modeBadge.textContent = state.apiKey ? `AI mode · ${state.model}` : "Local mode";
+  const base = state.apiKey ? `AI mode · ${state.model}` : "Local mode";
+  els.modeBadge.textContent = Proxy.available ? `${base} · proxy` : base;
   els.modeBadge.classList.toggle("ai-on", !!state.apiKey);
+  els.modeBadge.title = Proxy.available
+    ? "Served by server.js — lookups run server-side, so CORS-blocked sources work"
+    : "Static hosting — only CORS-friendly sources can be queried from the browser";
 }
