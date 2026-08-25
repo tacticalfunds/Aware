@@ -86,6 +86,13 @@ a { color: var(--accent); text-decoration: none; }
   min-height: 0;
 }
 
+/* Grid items default to min-width:auto, so a column cannot shrink below the
+   intrinsic width of its content. The horizontally-scrolling pill row is 45
+   items wide (~5200px), which blew the whole layout out to that width on mobile
+   and left the page scrolling sideways. min-width:0 lets the column shrink and
+   the row's own overflow-x actually take effect. */
+.layout > * { min-width: 0; }
+
 /* ---------- Chat panel ---------- */
 
 .chat-panel {
@@ -287,6 +294,22 @@ a { color: var(--accent); text-decoration: none; }
 @media (hover: hover) {
   .manual-open:hover { background: var(--accent-strong); text-decoration: none; }
 }
+.manual-links {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 6px 10px;
+  align-items: center;
+  margin-bottom: 10px;
+}
+.manual-open-multi { margin-bottom: 0; white-space: nowrap; }
+.manual-link-note { font-size: 11.5px; color: var(--text-dim); line-height: 1.4; }
+
+@media (max-width: 560px) {
+  /* Stack link + note on narrow screens instead of squeezing two columns. */
+  .manual-links { grid-template-columns: 1fr; gap: 2px; }
+  .manual-open-multi { justify-self: start; margin-top: 6px; }
+}
+
 .manual-copy { font-size: 12.5px; color: var(--text-dim); line-height: 1.5; margin-bottom: 8px; }
 .manual-input {
   width: 100%;
@@ -466,8 +489,9 @@ a { color: var(--accent); text-decoration: none; }
   gap: 8px;
   margin: 14px 0 0;
   /* 44 categories wrap to ~8 rows, which would let the sticky toolbar swallow
-     half the viewport. Cap it to ~3 rows and scroll within. */
-  max-height: 122px;
+     half the viewport. Cap to exactly 3 rows (35px pill + 8px gap) so the cap
+     never slices a row in half, and scroll within. */
+  max-height: 121px;
   overflow-y: auto;
   scrollbar-width: thin;
 }
@@ -732,6 +756,9 @@ a { color: var(--accent); text-decoration: none; }
   .category-pills {
     flex-wrap: nowrap;
     overflow-x: auto;
+    overflow-y: hidden;
+    max-height: none;      /* the desktop 3-row cap must not clip a single row */
+    min-width: 0;
     -webkit-overflow-scrolling: touch;
     padding-bottom: 4px;
     scrollbar-width: thin;

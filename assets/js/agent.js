@@ -42,7 +42,9 @@ function trimAgentHistory(messages) {
 // a {GROUP}_TOOLS / {GROUP}_EXECUTORS pair. Geolocation is the first such group.
 const TOOL_GROUPS = [
   { tools: typeof GEO_TOOLS !== "undefined" ? GEO_TOOLS : [],
-    executors: typeof GEO_EXECUTORS !== "undefined" ? GEO_EXECUTORS : {} }
+    executors: typeof GEO_EXECUTORS !== "undefined" ? GEO_EXECUTORS : {} },
+  { tools: typeof IMAGE_TOOLS !== "undefined" ? IMAGE_TOOLS : [],
+    executors: typeof IMAGE_EXECUTORS !== "undefined" ? IMAGE_EXECUTORS : {} }
 ];
 
 const GROUPED_EXECUTORS = Object.assign({}, ...TOOL_GROUPS.map(g => g.executors));
@@ -568,6 +570,15 @@ Method:
   and look them up. If an image is attached, describe what you can actually see in
   it that is investigatively useful: signage, languages, architecture, road markings,
   vehicle models, vegetation, terrain, sun/shadow direction, business names.
+- On any image whose origin or location is unknown, run reverse_image_search early —
+  it queries five engines at once and is usually the fastest route to an answer.
+  When the results come back, say explicitly what corroborates across two or more
+  engines versus what only one returned, and treat a TinEye first-seen date that
+  predates the image's claimed origin as a serious finding.
+- Geographic tools need a location to work on. Establish candidate coordinates first
+  (from a readable sign, a landmark, or the reverse image search), then verify with
+  osm_nearby, elevation, sun_position and weather_history. If nothing yields a
+  candidate, say so plainly rather than guessing coordinates.
 - Chain your findings. An MX record naming a provider, a subdomain hinting at a
   staging host, an ASN placing a server in a country — each should suggest the next check.
 - Most OSINT sources have no browser-callable API. For those, use search_tool_directory

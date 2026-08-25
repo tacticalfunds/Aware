@@ -561,13 +561,21 @@ function createTraceBubble() {
       return new Promise(resolve => {
         const card = document.createElement("div");
         card.className = "manual-request";
+        // A multi-engine handoff (reverse image search) opens several tools in one
+        // card; the single-link form stays as it was.
+        const linkBlock = req.multi && req.links?.length
+          ? `<div class="manual-links">${req.links.map(l => `
+              <a class="manual-open manual-open-multi" href="${escapeHtml(l.url)}" target="_blank" rel="noopener noreferrer">
+                ${escapeHtml(l.name)} ↗
+              </a>${l.note ? `<span class="manual-link-note">${escapeHtml(l.note)}</span>` : ""}`).join("")}</div>`
+          : `<a class="manual-open" href="${escapeHtml(req.url)}" target="_blank" rel="noopener noreferrer">
+              Open ${escapeHtml(req.tool_name)} ↗
+            </a>`;
         card.innerHTML = `
-          <div class="manual-head">🙋 Your turn — I can't query this one directly</div>
+          <div class="manual-head">🙋 Your turn — I can't query ${req.multi ? "these" : "this one"} directly</div>
           <div class="manual-tool">${escapeHtml(req.tool_name)}</div>
           ${req.why ? `<div class="manual-why">${escapeHtml(req.why)}</div>` : ""}
-          <a class="manual-open" href="${escapeHtml(req.url)}" target="_blank" rel="noopener noreferrer">
-            Open ${escapeHtml(req.tool_name)} ↗
-          </a>
+          ${linkBlock}
           <div class="manual-copy"><strong>Copy back:</strong> ${escapeHtml(req.what_to_copy)}</div>
         `;
         const ta = document.createElement("textarea");
