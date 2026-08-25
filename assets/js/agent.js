@@ -38,7 +38,17 @@ function trimAgentHistory(messages) {
 
 /* ---------- tool definitions handed to the model ---------- */
 
+// Grouped tool modules live in assets/js/tools/ and register themselves through
+// a {GROUP}_TOOLS / {GROUP}_EXECUTORS pair. Geolocation is the first such group.
+const TOOL_GROUPS = [
+  { tools: typeof GEO_TOOLS !== "undefined" ? GEO_TOOLS : [],
+    executors: typeof GEO_EXECUTORS !== "undefined" ? GEO_EXECUTORS : {} }
+];
+
+const GROUPED_EXECUTORS = Object.assign({}, ...TOOL_GROUPS.map(g => g.executors));
+
 const AGENT_TOOLS = [
+  ...TOOL_GROUPS.flatMap(g => g.tools),
   {
     name: "dns_lookup",
     description: "Look up live DNS records (A, AAAA, MX, TXT) for a domain. Use to confirm a domain resolves, find its mail provider, or read SPF/verification TXT records.",
@@ -193,18 +203,6 @@ const AGENT_TOOLS = [
     }
   },
   {
-    name: "geocode",
-    description: "Turns a place name or address into coordinates, or coordinates back into an address (OpenStreetMap Nominatim). Use when geolocating a photo or confirming an address.",
-    input_schema: {
-      type: "object",
-      properties: {
-        place: { type: "string", description: "Place name or address" },
-        lat: { type: "string" },
-        lon: { type: "string" }
-      }
-    }
-  },
-  {
     name: "vin_decode",
     description: "Decodes a 17-character VIN via the free official NHTSA database: make, model, year, plant, body type, engine. Works for vehicles sold in the US.",
     input_schema: {
@@ -227,22 +225,6 @@ const AGENT_TOOLS = [
         limit: { type: "integer", description: "How many sites to check (default 90, max 250)." }
       },
       required: ["username"]
-    }
-  },
-  {
-    name: "sun_position",
-    description:
-      "Sun altitude and compass azimuth for a location, date and time — plus sunrise/sunset/golden hour. " +
-      "Use to verify when an outdoor photo was taken: shadows fall in the OPPOSITE direction to the sun's azimuth, and shadow length relative to object height is 1/tan(altitude). " +
-      "Runs offline, no network.",
-    input_schema: {
-      type: "object",
-      properties: {
-        lat: { type: "number" },
-        lon: { type: "number" },
-        datetime: { type: "string", description: "ISO 8601, e.g. 2026-06-21T16:00:00Z. Omit for the day's sun times only." }
-      },
-      required: ["lat", "lon"]
     }
   },
   {
@@ -274,21 +256,6 @@ const AGENT_TOOLS = [
       type: "object",
       properties: { handle: { type: "string", description: "e.g. alice.bsky.social" } },
       required: ["handle"]
-    }
-  },
-  {
-    name: "osm_nearby",
-    description:
-      "Queries OpenStreetMap via Overpass for features near coordinates — useful when geolocating a photo to confirm what should be visible at a candidate spot (named buildings, shops, fuel stations, towers, bridges).",
-    input_schema: {
-      type: "object",
-      properties: {
-        lat: { type: "number" },
-        lon: { type: "number" },
-        radius: { type: "integer", description: "Metres, default 300." },
-        feature: { type: "string", description: "OSM key or key=value, e.g. 'amenity', 'shop=supermarket', 'man_made=tower'. Default: anything named." }
-      },
-      required: ["lat", "lon"]
     }
   },
   {
@@ -327,6 +294,9 @@ const AGENT_TOOLS = [
 /* ---------- executing a tool call ---------- */
 
 async function executeAgentTool(name, input, liveKeys, ctx = {}) {
+  // Tools contributed by a group module (assets/js/tools/*) handle themselves.
+  if (GROUPED_EXECUTORS[name]) return GROUPED_EXECUTORS[name](input, ctx);
+
   const needKey = k => {
     if (!liveKeys[k]) throw new Error(`No ${k} API key configured — the user can add one in AI settings.`);
     return liveKeys[k];
@@ -444,15 +414,6 @@ async function executeAgentTool(name, input, liveKeys, ctx = {}) {
       }
       return parts.length ? parts.join("\n\n") : "No mentions found on Hacker News or Wikipedia.";
     }
-    case "geocode": {
-      const r = await Proxy.lookup("nominatim",
-        input.lat && input.lon ? { lat: input.lat, lon: input.lon } : { q: input.place });
-      if (input.lat && input.lon) {
-        return r.display_name ? `${r.display_name}\n(${r.lat}, ${r.lon})` : "No address found for those coordinates.";
-      }
-      if (!Array.isArray(r) || !r.length) return "No location matched.";
-      return r.slice(0, 5).map(m => `${m.display_name} — ${m.lat}, ${m.lon}`).join("\n");
-    }
     case "vin_decode": {
       const r = await Proxy.lookup("nhtsa_vin", { vin: input.vin });
       const v = r?.Results?.[0];
@@ -484,39 +445,6 @@ async function executeAgentTool(name, input, liveKeys, ctx = {}) {
       return `Found "${d.username}" on ${d.found.length} of ${d.checked} sites checked:\n` +
         d.found.map(f => `- ${f.name} (${f.category}): ${f.url}`).join("\n") +
         `\n\nEach is a profile worth reading. Sites behind CAPTCHA/Cloudflare were skipped, so this is a floor, not a ceiling.`;
-    }
-    case "sun_position": {
-      const { lat, lon } = input;
-      const day = input.datetime ? new Date(input.datetime) : new Date();
-      if (isNaN(day)) throw new Error("Unparseable datetime — use ISO 8601 like 2026-06-21T16:00:00Z");
-      const times = SunCalc.getTimes(day, lat, lon);
-      const fmt = d => (d instanceof Date && !isNaN(d) ? d.toISOString().replace(".000Z", "Z") : "n/a");
-      const lines = [
-        `Location: ${lat}, ${lon}`,
-        `Sunrise: ${fmt(times.sunrise)}   Solar noon: ${fmt(times.solarNoon)}   Sunset: ${fmt(times.sunset)}`,
-        `Golden hour (evening) starts: ${fmt(times.goldenHour)}`
-      ];
-      if (input.datetime) {
-        // suncalc v2 returns DEGREES, azimuth measured from north — verified
-        // against sunrise/noon/sunset. Do NOT apply a radian conversion here.
-        const pos = SunCalc.getPosition(day, lat, lon);
-        const alt = pos.altitude, az = pos.azimuth;
-        const compass = ["N","NNE","NE","ENE","E","ESE","SE","SSE","S","SSW","SW","WSW","W","WNW","NW","NNW"][Math.round(((az % 360) + 360) % 360 / 22.5) % 16];
-        lines.push(
-          `\nAt ${fmt(day)}:`,
-          `  Sun altitude: ${alt.toFixed(1)}° ${alt < 0 ? "(below horizon — dark)" : ""}`,
-          `  Sun azimuth: ${az.toFixed(1)}° from north (${compass})`
-        );
-        if (alt > 0.5) {
-          const shadowAz = (az + 180) % 360;
-          const shadowCompass = ["N","NNE","NE","ENE","E","ESE","SE","SSE","S","SSW","SW","WSW","W","WNW","NW","NNW"][Math.round(shadowAz / 22.5) % 16];
-          lines.push(
-            `  Shadows point: ${shadowAz.toFixed(1)}° (${shadowCompass})`,
-            `  Shadow length: ${(1 / Math.tan(alt * Math.PI / 180)).toFixed(2)}x object height`
-          );
-        }
-      }
-      return lines.join("\n");
     }
     case "network_ownership": {
       if (input.asn) {
@@ -577,22 +505,6 @@ async function executeAgentTool(name, input, liveKeys, ctx = {}) {
         d.did && `DID: ${d.did}`,
         d.createdAt && `Created: ${String(d.createdAt).slice(0, 10)}`
       ].filter(Boolean).join("\n");
-    }
-    case "osm_nearby": {
-      const r = Number(input.radius) || 300;
-      const f = input.feature || "";
-      const sel = f.includes("=")
-        ? `["${f.split("=")[0]}"="${f.split("=")[1]}"]`
-        : f ? `["${f}"]` : `["name"]`;
-      const q = `[out:json][timeout:20];(node${sel}(around:${r},${input.lat},${input.lon});way${sel}(around:${r},${input.lat},${input.lon}););out center 40;`;
-      const d = await Proxy.lookup("overpass", { query: q });
-      const els = d.elements || [];
-      if (!els.length) return `No matching OSM features within ${r}m.`;
-      return `${els.length} feature(s) within ${r}m:\n` + els.slice(0, 25).map(e => {
-        const t = e.tags || {};
-        const kind = t.amenity || t.shop || t.building || t.man_made || t.highway || e.type;
-        return `- ${t.name || "(unnamed)"} [${kind}]`;
-      }).join("\n");
     }
     case "request_manual_lookup": {
       if (!ctx.onManualRequest) {

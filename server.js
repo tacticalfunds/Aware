@@ -119,6 +119,22 @@ const SOURCES = {
   bluesky_profile: {
     build: p => `https://public.api.bsky.app/xrpc/app.bsky.actor.getProfile?actor=${enc(p.handle)}`
   },
+  photon: {
+    // Komoot's geocoder — much better than Nominatim on partial/misspelled input.
+    build: p => `https://photon.komoot.io/api/?q=${enc(p.q)}&limit=8` +
+      (p.lat != null && p.lon != null ? `&lat=${enc(p.lat)}&lon=${enc(p.lon)}` : "")
+  },
+  opentopodata: {
+    build: p => `https://api.opentopodata.org/v1/srtm30m?locations=${enc(p.locations)}`
+  },
+  open_meteo_archive: {
+    // Historical weather back to 1940; archive lags ~5 days behind the present.
+    build: p => `https://archive-api.open-meteo.com/v1/archive?latitude=${enc(p.lat)}&longitude=${enc(p.lon)}` +
+      `&start_date=${enc(p.start)}&end_date=${enc(p.end)}` +
+      `&hourly=temperature_2m,precipitation,cloud_cover,weather_code,wind_speed_10m` +
+      `&daily=weather_code,temperature_2m_max,temperature_2m_min,precipitation_sum` +
+      `&timezone=UTC`
+  },
   overpass: {
     // Free-form OSM query — the workhorse for "what is near these coordinates".
     build: () => `https://overpass-api.de/api/interpreter`,

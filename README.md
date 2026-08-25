@@ -107,7 +107,31 @@ parameters, and the server builds the upstream URL itself from its own table —
 a raw URL through would be an SSRF hole. API keys can live in server env vars instead
 of every visitor's browser.
 
-Two of the 26 agent tools deserve specific mention:
+#### Geolocation tools — `assets/js/tools/geo.js`
+
+All seven geo capabilities the agent can run automatically live in one module,
+definitions and executors together. None need an API key:
+
+| Tool | Source | What it's for |
+|---|---|---|
+| `geocode` | Nominatim | Place/address ⇄ coordinates |
+| `place_search` | Photon | Fuzzy/partial names — a half-read shop sign |
+| `osm_nearby` | Overpass | What features should be visible at a candidate spot |
+| `elevation` | OpenTopoData | Rule candidates in/out by terrain; line-of-sight checks |
+| `weather_history` | Open-Meteo | What the weather **actually** was, back to 1940 |
+| `sun_position` | offline | Sun altitude/azimuth, shadow bearing and length |
+| `moon_position` | offline | Moon altitude/azimuth, phase, rise/set — night photos |
+
+Together these run the full verification loop: read visual clues → geocode → check
+terrain → check what's nearby → verify sun/moon geometry → verify weather.
+`weather_history` is the sharpest of them for breaking a false claim — an image
+showing dry ground on a day the record says had 12mm of rain is a hard contradiction.
+
+Tool groups register through a `{GROUP}_TOOLS` / `{GROUP}_EXECUTORS` pair that
+`agent.js` merges; add a new group by dropping a file in `assets/js/tools/` and
+listing it in `TOOL_GROUPS`.
+
+Two other tools deserve specific mention:
 
 - **`username_enumeration`** — checks a handle against hundreds of sites using the
   [WhatsMyName](https://github.com/WebBreacher/WhatsMyName) dataset (`data/wmn-data.json`,
