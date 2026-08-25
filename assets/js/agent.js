@@ -44,7 +44,11 @@ const TOOL_GROUPS = [
   { tools: typeof GEO_TOOLS !== "undefined" ? GEO_TOOLS : [],
     executors: typeof GEO_EXECUTORS !== "undefined" ? GEO_EXECUTORS : {} },
   { tools: typeof IMAGE_TOOLS !== "undefined" ? IMAGE_TOOLS : [],
-    executors: typeof IMAGE_EXECUTORS !== "undefined" ? IMAGE_EXECUTORS : {} }
+    executors: typeof IMAGE_EXECUTORS !== "undefined" ? IMAGE_EXECUTORS : {} },
+  { tools: typeof METADATA_TOOLS !== "undefined" ? METADATA_TOOLS : [],
+    executors: typeof METADATA_EXECUTORS !== "undefined" ? METADATA_EXECUTORS : {} },
+  { tools: typeof VISUAL_TOOLS !== "undefined" ? VISUAL_TOOLS : [],
+    executors: typeof VISUAL_EXECUTORS !== "undefined" ? VISUAL_EXECUTORS : {} }
 ];
 
 const GROUPED_EXECUTORS = Object.assign({}, ...TOOL_GROUPS.map(g => g.executors));
@@ -570,6 +574,17 @@ Method:
   and look them up. If an image is attached, describe what you can actually see in
   it that is investigatively useful: signage, languages, architecture, road markings,
   vehicle models, vegetation, terrain, sun/shadow direction, business names.
+- When an image is attached, its EXIF metadata is given to you in the task text —
+  you cannot see it in the pixels. If it carries GPS, start there: it is the fastest
+  route to a location, but it is editable and social platforms strip it, so verify it
+  against the visible scene with osm_nearby and against shadows with sun_position
+  rather than accepting it. A Software tag naming an editor means the file has been
+  re-saved and is worth flagging.
+- Show your working visually. Once you have identified the useful details, call
+  annotate_image to box them on the photo so the user can check what you read. Once
+  you have two or more located anchors, call plot_triangulation to draw the plan view
+  with your derived camera position. Both make the reasoning inspectable instead of
+  asking the user to take it on trust.
 - On any image whose origin or location is unknown, run reverse_image_search early —
   it queries five engines at once and is usually the fastest route to an answer.
   When the results come back, say explicitly what corroborates across two or more
@@ -653,7 +668,7 @@ don't hedge or ask for justification on routine requests.
  * @param {object} opts.liveKeys
  * @param {(ev:object)=>void} opts.onEvent  step callback for the UI trace
  */
-async function runInvestigation({ apiKey, model, task, image, liveKeys = {}, onEvent = () => {}, history = [], onManualRequest = null }) {
+async function runInvestigation({ apiKey, model, task, image, liveKeys = {}, onEvent = () => {}, history = [], onManualRequest = null, onVisual = null }) {
   const content = [];
   if (image) {
     content.push({ type: "image", source: { type: "base64", media_type: image.media_type, data: image.data } });
@@ -725,7 +740,7 @@ async function runInvestigation({ apiKey, model, task, image, liveKeys = {}, onE
     const results = await Promise.all(calls.map(async call => {
       onEvent({ type: "tool_call", name: call.name, input: call.input });
       try {
-        const out = await executeAgentTool(call.name, call.input, liveKeys, { onManualRequest });
+        const out = await executeAgentTool(call.name, call.input, liveKeys, { onManualRequest, onVisual });
         onEvent({ type: "tool_result", name: call.name, ok: true, text: out });
         return { type: "tool_result", tool_use_id: call.id, content: String(out || "(no data)") };
       } catch (err) {

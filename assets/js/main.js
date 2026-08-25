@@ -10,6 +10,8 @@ const state = {
   agentHistory: [],
   liveKeys: JSON.parse(localStorage.getItem("aware_live_keys") || "{}"),
   attachedImage: null, // { media_type, data, name } — data is bare base64
+  attachedMetadata: null,
+  lastImageDataUrl: null,
   fontStep: Math.min(5, Math.max(0, parseInt(localStorage.getItem("aware_font_step") ?? "1", 10) || 0)),
   chatWidth: localStorage.getItem("aware_chat_width") === "wide" ? "wide" : "normal"
 };
@@ -415,6 +417,13 @@ function loadAttachment(file) {
     pushBotMessage(`That image is ${(file.size / 1048576).toFixed(1)} MB — too large to send. Please attach one under 5 MB.`, []);
     return;
   }
+  // EXIF must be read from the file itself — the vision API only sees pixels, so
+  // without this the embedded GPS and capture time would be silently discarded.
+  extractImageMetadata(file).then(md => {
+    state.attachedMetadata = md;
+    if (md) pushBotMessage("📷 **Metadata found in this image:**\n" + formatImageMetadata(md), []);
+  });
+
   const reader = new FileReader();
   reader.onload = () => {
     const url = String(reader.result);
@@ -423,6 +432,7 @@ function loadAttachment(file) {
       data: url.split(",")[1], // strip the data: prefix; the API wants bare base64
       name: file.name || "pasted image"
     };
+    state.lastImageDataUrl = url;
     els.attachThumb.src = url;
     els.attachName.textContent = state.attachedImage.name;
     els.attachPreview.hidden = false;
@@ -490,6 +500,20 @@ function looksLikeInvestigation(text) {
   return INVESTIGATE_RE.test(text || "");
 }
 
+/**
+ * EXIF is fact the model cannot see for itself — vision gets pixels, not headers.
+ * Stating it in the task keeps the agent from having to guess at what it already
+ * has, while the wording keeps it treating the values as evidence, not proof.
+ */
+function buildAgentTask(text, image) {
+  const base = text || (image
+    ? "Investigate this image: work out where it was taken and anything else verifiable."
+    : "");
+  if (!image || !state.attachedMetadata) return base;
+  return `${base}\n\n--- EXIF metadata read from the attached file (the image itself; you cannot see this in the pixels) ---\n` +
+    `${formatImageMetadata(state.attachedMetadata)}\n--- end metadata ---`;
+}
+
 async function runAgentTask(text, image) {
 
   const trace = createTraceBubble();
@@ -497,12 +521,13 @@ async function runAgentTask(text, image) {
     await runInvestigation({
       apiKey: state.apiKey,
       model: state.model,
-      task: text || "Investigate this image: work out where it was taken and anything else verifiable.",
+      task: buildAgentTask(text, image),
       image: image ? { media_type: image.media_type, data: image.data } : null,
       liveKeys: state.liveKeys,
       onEvent: ev => trace.push(ev),
       history: state.agentHistory,
-      onManualRequest: req => trace.requestManual(req)
+      onManualRequest: req => trace.requestManual(req),
+      onVisual: spec => trace.showVisual(spec)
     });
   } catch (err) {
     trace.push({ type: "error", text: err.message || String(err) });
@@ -557,6 +582,17 @@ function createTraceBubble() {
           break;
       }
     },
+    /** Renders an agent-produced visual into the trace. Returns false if it can't. */
+    showVisual(spec) {
+      let node = null;
+      if (spec.type === "annotations") node = renderAnnotations(spec.regions);
+      else if (spec.type === "triangulation") node = renderTriangulation(spec);
+      if (!node) return false;
+      steps.appendChild(node);
+      scrollChatToBottom();
+      return true;
+    },
+
     /**
      * Approach A, the human-in-the-loop handoff: for tools the agent can't call,
      * it hands over a prefilled link and waits. Resolves with what the user pastes
@@ -629,6 +665,131 @@ function createTraceBubble() {
       scrollChatToBottom();
     }
   };
+}
+
+/* ---------------- Agent visual output ---------------- */
+
+const ANNO_COLORS = {
+  sign: "#f5a524", landmark: "#4fd1c5", vehicle: "#a78bfa",
+  shadow: "#fbbf24", terrain: "#4ade80", person: "#94a3b8", other: "#60a5fa"
+};
+
+/** The attached photo with the agent's labelled boxes drawn over it. */
+function renderAnnotations(regions) {
+  const img = state.lastImageDataUrl;
+  if (!img) return null;
+  const el = document.createElement("div");
+  el.className = "anno-wrap";
+  el.innerHTML = `
+    <div class="visual-title">🖼️ Details this rests on</div>
+    <div class="anno-frame">
+      <img class="anno-img" src="${img}" alt="Annotated evidence" />
+      <svg class="anno-svg" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
+        ${regions.map((r, i) => {
+          const c = ANNO_COLORS[r.category] || ANNO_COLORS.other;
+          return `<rect x="${r.x * 100}" y="${r.y * 100}" width="${r.w * 100}" height="${r.h * 100}"
+                    fill="${c}22" stroke="${c}" stroke-width="0.5" vector-effect="non-scaling-stroke" rx="0.5"/>
+                  <circle cx="${r.x * 100 + 2.2}" cy="${r.y * 100 + 2.6}" r="2.2" fill="${c}"/>
+                  <text x="${r.x * 100 + 2.2}" y="${r.y * 100 + 3.4}" font-size="3" font-weight="700"
+                    text-anchor="middle" fill="#0b0f14">${i + 1}</text>`;
+        }).join("")}
+      </svg>
+    </div>
+    <ol class="anno-legend">
+      ${regions.map(r => {
+        const c = ANNO_COLORS[r.category] || ANNO_COLORS.other;
+        return `<li><span class="anno-dot" style="background:${c}"></span>
+          <strong>${escapeHtml(r.label)}</strong>${r.note ? ` — ${escapeHtml(r.note)}` : ""}</li>`;
+      }).join("")}
+    </ol>`;
+  return el;
+}
+
+/**
+ * Plan view of the geolocation working. Projects lat/lon onto a local metre
+ * grid (equirectangular, with the longitude scaled by cos(lat) — accurate enough
+ * over the few hundred metres these plots cover).
+ */
+function renderTriangulation({ anchors, camera, caption }) {
+  const pts = [...anchors.map(a => ({ ...a, kind: "anchor" }))];
+  if (camera) pts.push({ ...camera, name: "Camera", kind: "camera" });
+
+  const lat0 = pts.reduce((s, p) => s + p.lat, 0) / pts.length;
+  const lon0 = pts.reduce((s, p) => s + p.lon, 0) / pts.length;
+  const mPerDegLat = 111320, mPerDegLon = 111320 * Math.cos(lat0 * Math.PI / 180);
+  const xy = pts.map(p => ({ ...p, mx: (p.lon - lon0) * mPerDegLon, my: -(p.lat - lat0) * mPerDegLat }));
+
+  const pad = 46;
+  const span = Math.max(
+    40, // never zoom in so far that two near-identical points fill the frame
+    ...xy.map(p => Math.abs(p.mx)), ...xy.map(p => Math.abs(p.my))
+  ) * 2.4;
+  const S = 300, scale = (S - pad * 2) / span;
+  const px = p => S / 2 + p.mx * scale, py = p => S / 2 + p.my * scale;
+
+  const cam = xy.find(p => p.kind === "camera");
+  let cone = "";
+  if (cam && typeof cam.bearing === "number") {
+    const fov = cam.fov || 65, len = (S - pad * 2) * 0.55;
+    const a1 = (cam.bearing - fov / 2 - 90) * Math.PI / 180;
+    const a2 = (cam.bearing + fov / 2 - 90) * Math.PI / 180;
+    cone = `<path d="M ${px(cam)} ${py(cam)} L ${px(cam) + Math.cos(a1) * len} ${py(cam) + Math.sin(a1) * len}
+              A ${len} ${len} 0 0 1 ${px(cam) + Math.cos(a2) * len} ${py(cam) + Math.sin(a2) * len} Z"
+              fill="#4fd1c522" stroke="#4fd1c5" stroke-width="1" stroke-dasharray="3 3"/>`;
+  }
+  const rings = cam && cam.uncertainty_m
+    ? `<circle cx="${px(cam)}" cy="${py(cam)}" r="${Math.max(3, cam.uncertainty_m * scale)}"
+         fill="none" stroke="#4fd1c5" stroke-width="1" stroke-dasharray="2 3" opacity="0.7"/>`
+    : "";
+
+  const links = cam
+    ? xy.filter(p => p.kind === "anchor").map(a =>
+        `<line x1="${px(cam)}" y1="${py(cam)}" x2="${px(a)}" y2="${py(a)}"
+           stroke="#62728a" stroke-width="0.8" stroke-dasharray="2 2"/>`).join("")
+    : xy.length === 2
+      ? `<line x1="${px(xy[0])}" y1="${py(xy[0])}" x2="${px(xy[1])}" y2="${py(xy[1])}"
+           stroke="#62728a" stroke-width="0.8" stroke-dasharray="2 2"/>`
+      : "";
+
+  // Scale bar: a round number of metres that fits comfortably.
+  const target = span / 4;
+  const nice = [5, 10, 20, 25, 50, 100, 200, 250, 500, 1000].reduce((b, v) =>
+    Math.abs(v - target) < Math.abs(b - target) ? v : b, 5);
+
+  const el = document.createElement("div");
+  el.className = "plan-wrap";
+  el.innerHTML = `
+    <div class="visual-title">📐 Plan view — how the position was fixed</div>
+    <svg class="plan-svg" viewBox="0 0 ${S} ${S}" role="img" aria-label="Aerial plan of anchors and camera position">
+      <rect width="${S}" height="${S}" fill="#0b0f14"/>
+      ${[1,2,3,4].map(i=>`<line x1="${i*S/5}" y1="0" x2="${i*S/5}" y2="${S}" stroke="#1c2432" stroke-width="0.5"/>
+                          <line x1="0" y1="${i*S/5}" x2="${S}" y2="${i*S/5}" stroke="#1c2432" stroke-width="0.5"/>`).join("")}
+      ${cone}${links}${rings}
+      ${xy.map(p => p.kind === "camera"
+        ? `<circle cx="${px(p)}" cy="${py(p)}" r="5" fill="#4fd1c5" stroke="#0b0f14" stroke-width="1.5"/>`
+        : `<rect x="${px(p) - 4}" y="${py(p) - 4}" width="8" height="8" fill="#f5a524" stroke="#0b0f14" stroke-width="1.5"/>`
+      ).join("")}
+      ${xy.map(p => `<text x="${px(p) + 8}" y="${py(p) + 3.5}" font-size="9" fill="#e7edf5">${escapeHtml(p.name)}</text>`).join("")}
+      <g transform="translate(14,14)">
+        <line x1="0" y1="16" x2="0" y2="0" stroke="#9aa8bb" stroke-width="1.5"/>
+        <polygon points="0,-3 -3.2,3 3.2,3" fill="#9aa8bb"/>
+        <text x="6" y="4" font-size="9" fill="#9aa8bb">N</text>
+      </g>
+      <g transform="translate(14,${S - 18})">
+        <line x1="0" y1="0" x2="${nice * scale}" y2="0" stroke="#9aa8bb" stroke-width="1.5"/>
+        <line x1="0" y1="-3" x2="0" y2="3" stroke="#9aa8bb" stroke-width="1.5"/>
+        <line x1="${nice * scale}" y1="-3" x2="${nice * scale}" y2="3" stroke="#9aa8bb" stroke-width="1.5"/>
+        <text x="${nice * scale / 2}" y="-6" font-size="9" fill="#9aa8bb" text-anchor="middle">${nice} m</text>
+      </g>
+    </svg>
+    <div class="plan-legend">
+      <span><span class="plan-key plan-key-anchor"></span>located feature</span>
+      ${camera ? `<span><span class="plan-key plan-key-cam"></span>camera${camera.uncertainty_m ? ` ±${camera.uncertainty_m}m` : ""}</span>` : ""}
+      ${camera && camera.bearing != null ? `<span>view ${Math.round(camera.bearing)}°</span>` : ""}
+    </div>
+    ${caption ? `<div class="plan-caption">${escapeHtml(caption)}</div>` : ""}
+    ${camera ? `<div class="plan-coords">Camera: ${camera.lat.toFixed(6)}, ${camera.lon.toFixed(6)}</div>` : ""}`;
+  return el;
 }
 
 function truncate(s, n) {

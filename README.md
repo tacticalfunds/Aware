@@ -107,6 +107,31 @@ parameters, and the server builds the upstream URL itself from its own table —
 a raw URL through would be an SSRF hole. API keys can live in server env vars instead
 of every visitor's browser.
 
+#### Image metadata — `assets/js/tools/metadata.js`
+
+EXIF is parsed **in the browser** the moment you attach an image, and handed to the
+agent as stated fact. This matters because Claude's vision reads pixels, not file
+headers — without it, a photo's embedded GPS coordinates and capture time are
+silently discarded, and those are usually the most direct answer to "where and when".
+
+Reported with the caveats that matter: EXIF is trivially editable, every major social
+platform strips it on upload, and a `Software` tag naming an editor means the file has
+been re-saved. Exposure values are read as a rough daylight/low-light cross-check
+against a claimed time.
+
+#### Visual output — `assets/js/tools/visual.js`
+
+Two tools that let the agent *show* its reasoning rather than assert it:
+
+- **`annotate_image`** — colour-coded numbered boxes over the photo marking the exact
+  details the conclusion rests on (amber signs, teal landmarks, violet vehicles,
+  yellow shadows, green terrain), with a matching legend. Coordinates are normalised
+  0–1 and clamped into frame.
+- **`plot_triangulation`** — an aerial plan view of the located anchors, the derived
+  camera position, its view cone and error radius, with a north arrow and scale bar.
+  It also returns every pairwise distance and bearing to the agent, so it doubles as a
+  check on its own geometry.
+
 #### Geolocation tools — `assets/js/tools/geo.js`
 
 All seven geo capabilities the agent can run automatically live in one module,
