@@ -123,6 +123,15 @@
 
       <label class="field-label" for="hibpKeyInput">Have I Been Pwned API key</label>
       <input id="hibpKeyInput" type="password" placeholder="for email breach checks (paid key)" autocomplete="off" />
+
+      <label class="field-label" for="veriphoneKeyInput">Veriphone API key</label>
+      <input id="veriphoneKeyInput" type="password" placeholder="for phone carrier + line type" autocomplete="off" />
+
+      <label class="field-label" for="abstractphoneKeyInput">AbstractAPI phone key</label>
+      <input id="abstractphoneKeyInput" type="password" placeholder="for phone carrier + location" autocomplete="off" />
+
+      <label class="field-label" for="ipqsKeyInput">IPQualityScore API key</label>
+      <input id="ipqsKeyInput" type="password" placeholder="for phone fraud/spam risk score" autocomplete="off" />
     </details>
 
     <div class="modal-actions">
@@ -132,6 +141,8 @@
   </div>
 </div>
 
+<script src="assets/vendor/libphonenumber-max.js"></script>
+<script src="assets/js/area-codes.js"></script>
 <script src="assets/js/tools-data.js"></script>
 <script src="assets/js/chatbot.js"></script>
 <script src="assets/js/live-lookup.js"></script>

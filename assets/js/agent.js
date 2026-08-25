@@ -113,6 +113,17 @@ const AGENT_TOOLS = [
     }
   },
   {
+    name: "phone_lookup",
+    description: "Analyse a phone number. Always returns offline numbering-plan facts (validity, country, line type, and for US/Canada numbers the geographic area the code was assigned to). If the user has configured a Veriphone, AbstractAPI or IPQualityScore key, also returns live carrier, location and fraud/spam-risk data. Use this whenever a phone number appears in the task.",
+    input_schema: {
+      type: "object",
+      properties: {
+        number: { type: "string", description: "The number, ideally in E.164 (+19144262906). A bare 10-digit number is assumed to be US/NANP." }
+      },
+      required: ["number"]
+    }
+  },
+  {
     name: "search_tool_directory",
     description: "Search this site's directory of 3,400+ OSINT tools by keyword. Use this for anything you cannot query directly — reverse image search, people search, geolocation references, plate/VIN databases, social media — and cite the specific tools back to the user so they can run them by hand.",
     input_schema: {
@@ -145,6 +156,27 @@ async function executeAgentTool(name, input, liveKeys) {
     case "abuseipdb_check":  return (await lookupAbuseIPDB(input.ip, needKey("abuseipdb"))).summary;
     case "eth_balance":      return (await lookupEtherscan(input.address, needKey("etherscan"))).summary;
     case "email_breaches":   return (await lookupHIBP(input.email, needKey("hibp"))).summary;
+    case "phone_lookup": {
+      // Offline analysis always runs; keyed enrichment is best-effort on top of it.
+      const parts = [(await lookupPhoneOffline(input.number)).summary];
+      const enrich = [
+        ["veriphone", "Veriphone", k => lookupVeriphone(input.number, k)],
+        ["abstractphone", "AbstractAPI", k => lookupAbstractPhone(input.number, k)],
+        ["ipqs", "IPQualityScore", k => lookupIPQSPhone(input.number, k)]
+      ];
+      for (const [keyName, label, fn] of enrich) {
+        if (!liveKeys[keyName]) continue;
+        try {
+          parts.push(`${label}: ${(await fn(liveKeys[keyName])).summary}`);
+        } catch (err) {
+          parts.push(`${label}: lookup failed (${err.message})`);
+        }
+      }
+      if (!enrich.some(([k]) => liveKeys[k])) {
+        parts.push("No phone-API key configured, so carrier/spam data was not retrieved — recommend manual tools for that.");
+      }
+      return parts.join("\n\n");
+    }
     case "search_tool_directory": {
       const hits = searchTools(input.query, input.limit || 8);
       if (!hits.length) return "No matching tools in the directory.";

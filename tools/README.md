@@ -40,6 +40,23 @@ in Frameworks/All-in-One). Existing hand-written entries are read back out of th
 current `tools-data.js` and win on URL collision, so their curated descriptions and
 tags survive a rebuild.
 
+## Rebuilding the phone area-code table
+
+`assets/js/area-codes.js` maps NANP area codes to region and cities, and is built
+from the public
+[Area-Code-Geolocation-Database](https://github.com/ravisorg/Area-Code-Geolocation-Database):
+
+```sh
+cd tools
+curl -sSL -o lists/areacodes.csv    https://raw.githubusercontent.com/ravisorg/Area-Code-Geolocation-Database/master/us-area-code-cities.csv
+curl -sSL -o lists/areacodes-ca.csv https://raw.githubusercontent.com/ravisorg/Area-Code-Geolocation-Database/master/ca-area-code-cities.csv
+node build-areacodes.js
+```
+
+`assets/vendor/libphonenumber-max.js` is the unmodified browser bundle from
+`libphonenumber-js` (Apache-2.0, license alongside it). Update it with
+`npm pack libphonenumber-js` and copy `bundle/libphonenumber-max.js`.
+
 ## Adding tools by hand
 
 Hand-written entries are preserved across rebuilds, so you can add them straight

@@ -60,7 +60,10 @@ function cacheEls() {
     virustotal: document.getElementById("virustotalKeyInput"),
     abuseipdb: document.getElementById("abuseipdbKeyInput"),
     etherscan: document.getElementById("etherscanKeyInput"),
-    hibp: document.getElementById("hibpKeyInput")
+    hibp: document.getElementById("hibpKeyInput"),
+    veriphone: document.getElementById("veriphoneKeyInput"),
+    abstractphone: document.getElementById("abstractphoneKeyInput"),
+    ipqs: document.getElementById("ipqsKeyInput")
   };
 }
 

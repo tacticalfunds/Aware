@@ -114,6 +114,12 @@ stay link-only.
 - IP geolocation/ASN — ipinfo.io
 - Bitcoin address balance/history — blockchain.info
 - Domain/URL scan history — urlscan.io
+- **Phone numbers — analysed entirely offline**, no network call: validity, country,
+  line type from the numbering plan (via a vendored
+  [libphonenumber-js](https://github.com/catamphetamine/libphonenumber-js) bundle),
+  plus the geographic region and cities for US/Canada area codes. Numbers port
+  between carriers, so this establishes geography and line type — never the current
+  carrier or the subscriber.
 
 **Optional key** (added per-user in AI settings → "Live lookup API keys",
 stored only in `localStorage`, same bring-your-own-key pattern as the Claude
@@ -126,6 +132,13 @@ integration):
   support direct browser calls due to CORS, so this one may fall back to its
   error message even with a valid key; a small server-side proxy would be the
   fix if that matters to you)
+- Veriphone / AbstractAPI (phone carrier and line type)
+- IPQualityScore (phone fraud and spam-risk score)
+
+The three phone providers are the answer to "which carrier is this, and is it
+reported as spam" — questions the offline analysis genuinely cannot answer. Their
+browser-CORS behaviour is unverified (this repo was built in a sandbox that can't
+reach them), so treat a CORS failure there as possible rather than surprising.
 
 Each lookup fails gracefully — a blocked/erroring source shows a clear "couldn't
 reach it directly" note plus the reason, rather than breaking silently or

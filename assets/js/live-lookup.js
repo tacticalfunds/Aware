@@ -16,6 +16,7 @@
  *     - Certificate/subdomain  (crt.sh)
  *     - Bitcoin address        (blockchain.info)
  *     - urlscan.io scan history
+ *     - Phone numbers          (offline: libphonenumber + NANP area-code table)
  *
  *   Optional key (added in AI settings, stored only in localStorage, same
  *   pattern as the Claude key):
@@ -31,8 +32,26 @@ const LIVE_PATTERNS = {
   btc: /\b(bc1[ac-hj-np-z02-9]{11,71}|[13][a-km-zA-HJ-NP-Z1-9]{25,34})\b/,
   eth: /\b(0x[a-fA-F0-9]{40})\b/,
   email: /\b([a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})\b/,
-  domain: /\b((?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,})\b/i
+  domain: /\b((?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,})\b/i,
+  // Candidate only — a digit run is far too weak on its own, so every hit is
+  // confirmed by libphonenumber before it counts as a phone target.
+  phoneCandidate: /(\+?\d[\d\s().-]{7,18}\d)/g
 };
+
+/** Parses a phone number with libphonenumber; returns null if it isn't valid. */
+function parsePhone(raw, defaultCountry) {
+  const lib = self.libphonenumber;
+  if (!lib) return null;
+  try {
+    // Bare national numbers need a region; assume US/NANP unless it's already +E.164.
+    const p = raw.trim().startsWith("+")
+      ? lib.parsePhoneNumberFromString(raw)
+      : lib.parsePhoneNumberFromString(raw, defaultCountry || "US");
+    return p && p.isValid() ? p : null;
+  } catch {
+    return null;
+  }
+}
 
 function extractTargets(text) {
   const targets = [];
@@ -45,6 +64,17 @@ function extractTargets(text) {
   if (ip) targets.push({ type: "ip", value: ip[1] });
   if (btc) targets.push({ type: "btc", value: btc[1] });
   if (eth) targets.push({ type: "eth", value: eth[1] });
+
+  // Phone: test each digit run and keep the first that libphonenumber validates.
+  // Skip if an IP/BTC/ETH already claimed those digits, so "8.8.8.8" or a wallet
+  // address can't be misread as a number.
+  const claimed = [ip?.[1], btc?.[1], eth?.[1]].filter(Boolean).join(" ");
+  for (const m of text.matchAll(LIVE_PATTERNS.phoneCandidate)) {
+    const raw = m[1];
+    if (claimed.includes(raw.trim())) continue;
+    const parsed = parsePhone(raw);
+    if (parsed) { targets.push({ type: "phone", value: parsed.number, parsed }); break; }
+  }
 
   // Only look for a bare domain if we didn't already find one inside the email address.
   const domainMatch = text.match(LIVE_PATTERNS.domain);
@@ -125,7 +155,101 @@ async function lookupUrlscan(domain) {
   return { ok: true, summary: `${total} scan(s) on record. Most recent:\n${recent.join("\n")}` };
 }
 
+const PHONE_TYPE_LABELS = {
+  MOBILE: "mobile",
+  FIXED_LINE: "landline",
+  FIXED_LINE_OR_MOBILE: "landline or mobile (not distinguishable from the numbering plan)",
+  TOLL_FREE: "toll-free",
+  PREMIUM_RATE: "premium rate",
+  SHARED_COST: "shared cost",
+  VOIP: "VoIP",
+  PERSONAL_NUMBER: "personal number",
+  PAGER: "pager",
+  UAN: "universal access number",
+  VOICEMAIL: "voicemail"
+};
+
+/**
+ * Everything derivable from the number itself, with no network call: validity,
+ * country, line type from the numbering plan, and — for NANP numbers — the
+ * geographic area the code was assigned to.
+ */
+function lookupPhoneOffline(raw) {
+  const p = typeof raw === "object" && raw?.isValid ? raw : parsePhone(String(raw));
+  if (!p) {
+    return { ok: true, empty: true, summary: "Not a valid phone number in any known numbering plan." };
+  }
+
+  const lines = [
+    `E.164: ${p.number}`,
+    `National format: ${p.formatNational()}`,
+    `Country: ${p.country || "unknown"} (+${p.countryCallingCode})`
+  ];
+
+  const type = p.getType();
+  lines.push(`Line type: ${type ? PHONE_TYPE_LABELS[type] || type.toLowerCase() : "not specified by the numbering plan"}`);
+
+  if ((p.country === "US" || p.country === "CA") && typeof NANP_AREA_CODES !== "undefined") {
+    const areaCode = p.nationalNumber.slice(0, 3);
+    const entry = NANP_AREA_CODES[areaCode];
+    if (entry) {
+      const [region, country, cities] = entry;
+      lines.push(`Area code ${areaCode}: ${region}, ${country}`);
+      if (cities) lines.push(`Cities in that area code: ${cities.split("|").join(", ")}`);
+    }
+  }
+
+  lines.push("Note: this is numbering-plan data only. Numbers port between carriers, so it does not establish the current carrier or the subscriber.");
+  return { ok: true, summary: lines.join("\n") };
+}
+
 /* ---------- Optional-key sources ---------- */
+
+async function lookupVeriphone(e164, key) {
+  const data = await fetchJson(
+    `https://api.veriphone.io/v2/verify?phone=${encodeURIComponent(e164)}&key=${encodeURIComponent(key)}`
+  );
+  if (data.status !== "success") throw new Error(data.message || "Veriphone error");
+  const lines = [
+    `Valid: ${data.phone_valid}`,
+    data.phone_type && `Type: ${data.phone_type}`,
+    data.carrier && `Carrier: ${data.carrier}`,
+    data.phone_region && `Region: ${data.phone_region}`,
+    data.country && `Country: ${data.country}`
+  ].filter(Boolean);
+  return { ok: true, summary: lines.join("\n") };
+}
+
+async function lookupAbstractPhone(e164, key) {
+  const data = await fetchJson(
+    `https://phonevalidation.abstractapi.com/v1/?api_key=${encodeURIComponent(key)}&phone=${encodeURIComponent(e164)}`
+  );
+  const lines = [
+    `Valid: ${data.valid}`,
+    data.type && `Type: ${data.type}`,
+    data.carrier && `Carrier: ${data.carrier}`,
+    data.location && `Location: ${data.location}`,
+    data.country?.name && `Country: ${data.country.name}`
+  ].filter(Boolean);
+  return { ok: true, summary: lines.join("\n") };
+}
+
+async function lookupIPQSPhone(e164, key) {
+  const data = await fetchJson(
+    `https://ipqualityscore.com/api/json/phone/${encodeURIComponent(key)}/${encodeURIComponent(e164)}`
+  );
+  if (data.success === false) throw new Error(data.message || "IPQualityScore error");
+  const lines = [
+    `Fraud score: ${data.fraud_score}/100`,
+    data.recent_abuse !== undefined && `Recent abuse reported: ${data.recent_abuse}`,
+    data.risky !== undefined && `Risky: ${data.risky}`,
+    data.carrier && `Carrier: ${data.carrier}`,
+    data.line_type && `Line type: ${data.line_type}`,
+    data.city && `Location: ${[data.city, data.region, data.country].filter(Boolean).join(", ")}`,
+    data.active !== undefined && `Active: ${data.active}`
+  ].filter(Boolean);
+  return { ok: true, summary: lines.join("\n") };
+}
 
 async function lookupShodan(ip, key) {
   const data = await fetchJson(`https://api.shodan.io/shodan/host/${encodeURIComponent(ip)}?key=${encodeURIComponent(key)}`);
@@ -203,6 +327,12 @@ const LIVE_SOURCES = {
     { source: "AbuseIPDB", needsKey: "abuseipdb", run: (t, key) => lookupAbuseIPDB(t.value, key) },
     { source: "VirusTotal", needsKey: "virustotal", run: (t, key) => lookupVirusTotal(t.value, "ip", key) }
   ],
+  phone: [
+    { source: "Numbering plan (offline)", run: t => lookupPhoneOffline(t.parsed || t.value) },
+    { source: "Veriphone", needsKey: "veriphone", run: (t, key) => lookupVeriphone(t.value, key) },
+    { source: "AbstractAPI", needsKey: "abstractphone", run: (t, key) => lookupAbstractPhone(t.value, key) },
+    { source: "IPQualityScore", needsKey: "ipqs", run: (t, key) => lookupIPQSPhone(t.value, key) }
+  ],
   btc: [{ source: "blockchain.info", run: t => lookupBTC(t.value) }],
   eth: [{ source: "Etherscan", needsKey: "etherscan", run: (t, key) => lookupEtherscan(t.value, key) }],
   email: [{ source: "Have I Been Pwned", needsKey: "hibp", run: (t, key) => lookupHIBP(t.value, key) }]
@@ -225,8 +355,10 @@ async function runLiveLookups(text, keys = {}) {
         continue;
       }
       jobs.push(
-        src
-          .run(target, src.needsKey ? keys[src.needsKey] : undefined)
+        // Promise.resolve so a source can be synchronous — the offline phone
+        // lookup returns a plain object, and calling .then() on it would throw.
+        Promise.resolve()
+          .then(() => src.run(target, src.needsKey ? keys[src.needsKey] : undefined))
           .then(r => ({
             target,
             source: src.source,
