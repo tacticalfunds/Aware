@@ -84,6 +84,52 @@ const GEO_TOOLS = [
     }
   },
   {
+    name: "osm_find_named",
+    description:
+      "Finds a NAMED feature in OpenStreetMap — a shop, restaurant, pachinko parlour, station, anything with a name — optionally within a radius of a point. " +
+      "This is how you turn a sign you read in a photo into coordinates. Run it once per readable business name: each one that resolves is an independent anchor, and several anchors together fix the camera position far more tightly than any single one. " +
+      "Matching is case-insensitive and partial, so a partly-obscured sign still works.",
+    input_schema: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Name or fragment as read from the sign, e.g. 'SHOE PLAZA'." },
+        lat: { type: "number", description: "Optional centre to search around." },
+        lon: { type: "number" },
+        radius: { type: "integer", description: "Metres around that centre, default 2000." }
+      },
+      required: ["name"]
+    }
+  },
+  {
+    name: "geo_measure",
+    description:
+      "Geometry between coordinates, computed offline. Two modes:\n" +
+      "• Give `points` (two {lat,lon}) → distance in metres, the compass bearing from the first to the second, and the midpoint.\n" +
+      "• Give `from` + `bearing` + `distance` → the coordinates you arrive at, so you can propose a camera position and then check its elevation.\n" +
+      "Use this to work out where a photo was taken from: once two or more signs are located, the line between them plus their left-to-right order in frame tells you which side the camera was on and roughly which way it was pointing.",
+    input_schema: {
+      type: "object",
+      properties: {
+        points: {
+          type: "array",
+          description: "Exactly two points, as {lat, lon}.",
+          items: {
+            type: "object",
+            properties: { lat: { type: "number" }, lon: { type: "number" } },
+            required: ["lat", "lon"]
+          }
+        },
+        from: {
+          type: "object",
+          properties: { lat: { type: "number" }, lon: { type: "number" } },
+          required: ["lat", "lon"]
+        },
+        bearing: { type: "number", description: "Degrees from north." },
+        distance: { type: "number", description: "Metres." }
+      }
+    }
+  },
+  {
     name: "elevation",
     description: "Ground elevation in metres at one or more coordinates (OpenTopoData/SRTM). Use to rule candidate locations in or out: a photo showing dead-flat ground is inconsistent with a candidate on a slope, and elevation differences tell you whether a distant landmark could actually be visible.",
     input_schema: {
@@ -195,6 +241,78 @@ const GEO_EXECUTORS = {
       const kind = t.amenity || t.shop || t.building || t.man_made || t.highway || e.type;
       return `- ${t.name || "(unnamed)"} [${kind}]`;
     }).join("\n");
+  },
+
+  async osm_find_named(input) {
+    const r = Number(input.radius) || 2000;
+    // Escape regex metacharacters so a name like "Joe's Café (Ltd.)" still matches.
+    // Single backslash before the metacharacter — doubling it builds a regex that is
+    // valid but silently matches nothing.
+    const safe = String(input.name).replace(/["\\]/g, "").replace(/[.*+?^${}()|[\]]/g, "\\$&");
+    const area = input.lat != null && input.lon != null
+      ? `(around:${r},${input.lat},${input.lon})`
+      : "";
+    if (!area) return "Give a lat/lon to search around — a global name search would return far too much.";
+    const q = `[out:json][timeout:25];` +
+      `(node["name"~"${safe}",i]${area};way["name"~"${safe}",i]${area};` +
+      `node["name:en"~"${safe}",i]${area};way["name:en"~"${safe}",i]${area};);out center 25;`;
+    const d = await Proxy.lookup("overpass", { query: q });
+    const els = d.elements || [];
+    if (!els.length) {
+      return `No OSM feature matching "${input.name}" within ${r}m. It may not be mapped, or may be mapped under a local-language name — try the native-script spelling, or a shorter fragment.`;
+    }
+    return `${els.length} match(es) for "${input.name}" within ${r}m:\n` + els.slice(0, 15).map(e => {
+      const t = e.tags || {};
+      const lat = e.lat ?? e.center?.lat, lon = e.lon ?? e.center?.lon;
+      const kind = t.shop || t.amenity || t.leisure || t.office || t.building || e.type;
+      return `- ${t.name || t["name:en"] || "(unnamed)"} [${kind}] — ${lat}, ${lon}`;
+    }).join("\n");
+  },
+
+  // Offline great-circle maths. Verified against London->Paris: 343.5 km, initial
+  // bearing 148.1 degrees.
+  async geo_measure(input) {
+    const R = 6371000; // mean Earth radius, metres
+    const rad = d => (d * Math.PI) / 180;
+    const deg = r => (r * 180) / Math.PI;
+
+    if (Array.isArray(input.points) && input.points.length === 2) {
+      const [a, b] = input.points;
+      const φ1 = rad(a.lat), φ2 = rad(b.lat), Δφ = rad(b.lat - a.lat), Δλ = rad(b.lon - a.lon);
+      const h = Math.sin(Δφ / 2) ** 2 + Math.cos(φ1) * Math.cos(φ2) * Math.sin(Δλ / 2) ** 2;
+      const dist = 2 * R * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
+
+      const y = Math.sin(Δλ) * Math.cos(φ2);
+      const x = Math.cos(φ1) * Math.sin(φ2) - Math.sin(φ1) * Math.cos(φ2) * Math.cos(Δλ);
+      const brng = (deg(Math.atan2(y, x)) + 360) % 360;
+
+      // Midpoint
+      const Bx = Math.cos(φ2) * Math.cos(Δλ), By = Math.cos(φ2) * Math.sin(Δλ);
+      const φ3 = Math.atan2(Math.sin(φ1) + Math.sin(φ2), Math.sqrt((Math.cos(φ1) + Bx) ** 2 + By ** 2));
+      const λ3 = rad(a.lon) + Math.atan2(By, Math.cos(φ1) + Bx);
+
+      return [
+        `Distance: ${dist < 1000 ? `${dist.toFixed(1)} m` : `${(dist / 1000).toFixed(2)} km`}`,
+        `Bearing A→B: ${brng.toFixed(1)}° (${toCompass(brng)})`,
+        `Bearing B→A: ${((brng + 180) % 360).toFixed(1)}° (${toCompass((brng + 180) % 360)})`,
+        `Midpoint: ${deg(φ3).toFixed(6)}, ${(((deg(λ3) + 540) % 360) - 180).toFixed(6)}`,
+        ``,
+        `To place the camera: the two features lie on the ${brng.toFixed(0)}°/${((brng + 180) % 360).toFixed(0)}° line. ` +
+        `Whichever appears on the LEFT in the photo tells you which side of that line the camera sits, and the view direction is roughly perpendicular to it — ` +
+        `use project mode (from/bearing/distance) to propose a camera point, then check elevation there.`
+      ].join("\n");
+    }
+
+    if (input.from && input.bearing != null && input.distance != null) {
+      const δ = Number(input.distance) / R, θ = rad(Number(input.bearing));
+      const φ1 = rad(input.from.lat), λ1 = rad(input.from.lon);
+      const φ2 = Math.asin(Math.sin(φ1) * Math.cos(δ) + Math.cos(φ1) * Math.sin(δ) * Math.cos(θ));
+      const λ2 = λ1 + Math.atan2(Math.sin(θ) * Math.sin(δ) * Math.cos(φ1), Math.cos(δ) - Math.sin(φ1) * Math.sin(φ2));
+      return `From ${input.from.lat}, ${input.from.lon} on bearing ${input.bearing}° for ${input.distance} m:\n` +
+        `${deg(φ2).toFixed(6)}, ${(((deg(λ2) + 540) % 360) - 180).toFixed(6)}`;
+    }
+
+    return "Give either `points` (two coordinates) or `from` + `bearing` + `distance`.";
   },
 
   async elevation(input) {

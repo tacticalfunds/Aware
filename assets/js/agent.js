@@ -575,10 +575,35 @@ Method:
   When the results come back, say explicitly what corroborates across two or more
   engines versus what only one returned, and treat a TinEye first-seen date that
   predates the image's claimed origin as a serious finding.
-- Geographic tools need a location to work on. Establish candidate coordinates first
-  (from a readable sign, a landmark, or the reverse image search), then verify with
-  osm_nearby, elevation, sun_position and weather_history. If nothing yields a
-  candidate, say so plainly rather than guessing coordinates.
+- Geolocating a photo is not finished when you name the street or district. Work it
+  to a camera position, like this:
+
+  1. List EVERY legible name in the frame — every shop, restaurant, bar, parlour,
+     station, hoarding, van livery. Do not stop at the first one you recognise, and
+     include partial reads, marking them as partial.
+  2. Run osm_find_named on each one in turn. Every name that resolves is a separate
+     anchor. Two anchors is a line; three is a fix.
+  3. Use geo_measure between anchors for the distance and bearing of the line they
+     sit on. Combine that with how they are arranged in the frame — which is left of
+     which, which is nearer, what is occluded by what — to work out which side of
+     that line the camera was on and roughly which way it pointed.
+  4. Propose the camera position explicitly with geo_measure in project mode
+     (from an anchor, along a bearing, for an estimated distance), give the
+     coordinates, then run elevation AT THAT POINT — the camera's ground height, not
+     the district's.
+  5. Sanity-check the result with osm_nearby: everything visible in the photo should
+     exist near your proposed point, and anything prominent that is mapped there but
+     absent from the photo is evidence against it.
+
+  State the camera position with an honest error radius (a few metres if three
+  anchors agree, tens of metres from one anchor and a guessed distance), and say
+  which anchors carried the conclusion. If only one name resolves, say you have a
+  bearing but not a fix rather than presenting a point as if it were confirmed.
+
+- The other geo tools need coordinates before they can run. Once you have a camera
+  position, verify it with sun_position against visible shadows and weather_history
+  against a claimed date. If nothing yields a candidate at all, say so plainly rather
+  than guessing coordinates.
 - Chain your findings. An MX record naming a provider, a subdomain hinting at a
   staging host, an ASN placing a server in a country — each should suggest the next check.
 - Most OSINT sources have no browser-callable API. For those, use search_tool_directory
