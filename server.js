@@ -137,13 +137,80 @@ const SOURCES = {
   },
   overpass: {
     // Free-form OSM query — the workhorse for "what is near these coordinates".
+    //
+    // The main instance rate-limits hard (429) and sheds load under pressure
+    // (504), which in practice meant an investigation spent its whole step
+    // budget on failed lookups. Mirrors are tried in order, and a short-lived
+    // cache stops an agent that retries the same query from paying twice.
     build: () => `https://overpass-api.de/api/interpreter`,
+    mirrors: [
+      "https://overpass.kumi.systems/api/interpreter",
+      "https://overpass.private.coffee/api/interpreter",
+      "https://overpass.osm.jp/api/interpreter"
+    ],
     method: "POST",
     body: p => `data=${enc(p.query)}`,
-    contentType: "application/x-www-form-urlencoded"
+    contentType: "application/x-www-form-urlencoded",
+    timeout: 30000,
+    cacheKey: p => `overpass:${p.query}`,
+    cacheMs: 10 * 60 * 1000
+  },
+
+  /* --- imagery and photos of places, so a candidate location can actually be
+         looked at rather than merely named --- */
+
+  commons_geosearch: {
+    // Every geotagged photo Wikimedia Commons holds within a radius of a point.
+    // iiurlwidth asks for an 800px thumbnail, which is what gets shown to the
+    // model — the originals are frequently 20 MP.
+    build: p => `https://commons.wikimedia.org/w/api.php?action=query&format=json` +
+      `&generator=geosearch&ggsnamespace=6` +
+      `&ggscoord=${enc(p.lat)}%7C${enc(p.lon)}` +
+      `&ggsradius=${enc(Math.min(Math.max(Number(p.radius) || 500, 10), 10000))}` +
+      `&ggslimit=${enc(Math.min(Number(p.limit) || 20, 50))}` +
+      `&prop=imageinfo%7Ccoordinates&iiprop=url%7Cextmetadata%7Cmime&iiurlwidth=800`
+  },
+  commons_search: {
+    // Same, but by name — "Rockmount Ranch Wear", "Union Station Denver".
+    build: p => `https://commons.wikimedia.org/w/api.php?action=query&format=json` +
+      `&generator=search&gsrnamespace=6&gsrsearch=${enc(p.q)}` +
+      `&gsrlimit=${enc(Math.min(Number(p.limit) || 12, 30))}` +
+      `&prop=imageinfo&iiprop=url%7Cextmetadata%7Cmime&iiurlwidth=800`
+  },
+  openverse: {
+    // ~700M openly-licensed images. No key for anonymous use.
+    build: p => `https://api.openverse.org/v1/images/?q=${enc(p.q)}` +
+      `&page_size=${enc(Math.min(Number(p.limit) || 12, 20))}&mature=false`
+  },
+  ddg_search: {
+    // Best-effort web search with no key. DuckDuckGo serves datacenter IPs an
+    // anomaly page often enough that the transform reports that case explicitly
+    // rather than returning zero results and looking like "nothing exists".
+    build: p => `https://html.duckduckgo.com/html/?q=${enc(p.q)}`,
+    headers: {
+      Accept: "text/html,application/xhtml+xml",
+      "Accept-Language": "en-US,en;q=0.9"
+    },
+    timeout: 20000,
+    transform: body => parseDuckDuckGo(body && body.raw)
   },
 
   // --- credentialed; key comes from the server env, never the browser ---
+  mapillary_images: {
+    // Crowdsourced street-level photography, with the compass angle of each
+    // shot — which is directly comparable to a derived camera bearing.
+    key: "MAPILLARY_TOKEN",
+    build: (p, k) => `https://graph.mapillary.com/images` +
+      `?fields=id,thumb_1024_url,computed_geometry,geometry,captured_at,compass_angle,is_pano` +
+      `&bbox=${enc(p.bbox)}&limit=${enc(Math.min(Number(p.limit) || 12, 50))}` +
+      `&access_token=${enc(k)}`
+  },
+  brave_search: {
+    key: "BRAVE_KEY",
+    build: p => `https://api.search.brave.com/res/v1/web/search?q=${enc(p.q)}&count=10`,
+    auth: (url, k) => ({ url, headers: { "X-Subscription-Token": k, Accept: "application/json" } })
+  },
+
   shodan: {
     key: "SHODAN_KEY",
     build: (p, k) => `https://api.shodan.io/shodan/host/${enc(p.ip)}?key=${enc(k)}`
@@ -177,6 +244,43 @@ const SOURCES = {
   }
 };
 
+/*
+ * DuckDuckGo's no-JavaScript endpoint. Results are anchors carrying a redirect
+ * URL with the real target in the uddg parameter. There is no API contract here,
+ * so the parser is deliberately loose and reports "blocked" rather than "empty"
+ * when the markup has none of the shapes it knows — an empty result set and a
+ * bot wall mean very different things to an investigation.
+ */
+function parseDuckDuckGo(html) {
+  if (typeof html !== "string" || !html) return { blocked: true, reason: "empty response", results: [] };
+  if (/anomaly|unusual traffic|challenge-platform|captcha/i.test(html) && !/result__a/.test(html)) {
+    return { blocked: true, reason: "bot challenge", results: [] };
+  }
+
+  const results = [];
+  const re = /<a[^>]+class="[^"]*result__a[^"]*"[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/g;
+  const strip = t => t.replace(/<[^>]+>/g, "").replace(/&amp;/g, "&").replace(/&#x27;|&#39;/g, "'")
+    .replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&nbsp;/g, " ").trim();
+
+  let m;
+  while ((m = re.exec(html)) && results.length < 12) {
+    let href = m[1];
+    const uddg = /[?&]uddg=([^&"]+)/.exec(href);
+    if (uddg) { try { href = decodeURIComponent(uddg[1]); } catch { /* keep the redirect */ } }
+    if (href.startsWith("//")) href = "https:" + href;
+    results.push({ title: strip(m[2]), url: href, snippet: "" });
+  }
+
+  const sre = /<a[^>]+class="[^"]*result__snippet[^"]*"[^>]*>([\s\S]*?)<\/a>/g;
+  for (let i = 0; i < results.length; i++) {
+    const sm = sre.exec(html);
+    if (sm) results[i].snippet = strip(sm[1]);
+  }
+
+  if (!results.length) return { blocked: true, reason: "no parseable results", results: [] };
+  return { blocked: false, results };
+}
+
 /** Which proxied sources are usable right now — the client uses this to decide. */
 function availableSources() {
   const out = {};
@@ -184,6 +288,31 @@ function availableSources() {
     out[name] = !src.key || !!process.env[src.key];
   }
   return out;
+}
+
+/*
+ * A transient upstream failure is not a dead end — but the agent only finds that
+ * out if it burns a step retrying, so retries happen here instead. 429 and the
+ * 5xx family are the load-shedding codes; everything else is a real answer and
+ * comes straight back.
+ */
+const RETRYABLE = new Set([429, 500, 502, 503, 504]);
+const LOOKUP_CACHE = new Map();   // cacheKey -> { at, value }
+
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+async function fetchOnce(url, init, timeout) {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), timeout);
+  try {
+    const res = await fetch(url, { ...init, signal: controller.signal });
+    const text = await res.text();
+    let body;
+    try { body = JSON.parse(text); } catch { body = { raw: text.slice(0, 20000) }; }
+    return { ok: res.ok, status: res.status, body };
+  } finally {
+    clearTimeout(timer);
+  }
 }
 
 async function runLookup(name, params) {
@@ -201,11 +330,18 @@ async function runLookup(name, params) {
     }
   }
 
+  const ck = src.cacheKey && src.cacheKey(params || {});
+  if (ck) {
+    const hit = LOOKUP_CACHE.get(ck);
+    if (hit && Date.now() - hit.at < (src.cacheMs || 300000)) return hit.value;
+  }
+
   let url = src.build(params || {}, key);
   let headers = {
     // Nominatim and a few others reject requests without a real UA.
     "User-Agent": "Aware-OSINT/1.0 (+https://github.com/tacticalfunds/Aware)",
-    Accept: "application/json"
+    Accept: "application/json",
+    ...(src.headers || {})
   };
   if (src.auth) {
     const a = src.auth(url, key);
@@ -220,23 +356,41 @@ async function runLookup(name, params) {
     init.headers = { ...headers, "Content-Type": src.contentType || "application/json" };
   }
 
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 15000);
-  try {
-    const res = await fetch(url, { ...init, signal: controller.signal });
-    const text = await res.text();
-    let body;
-    try { body = JSON.parse(text); } catch { body = { raw: text.slice(0, 20000) }; }
-    return { ok: res.ok, status: res.status, body };
-  } catch (err) {
-    throw Object.assign(
-      new Error(err.name === "AbortError" ? "Upstream timed out after 15s" : err.message),
-      { status: 502 }
-    );
-  } finally {
-    clearTimeout(timer);
+  // The primary URL first, then each mirror, then one more pass over all of them
+  // with a growing pause — a rate limit usually clears in a few seconds.
+  const endpoints = [url, ...(src.mirrors || [])];
+  const timeout = src.timeout || 15000;
+  const attempts = src.mirrors ? endpoints.length * 2 : 2;
+  let last = null;
+
+  for (let i = 0; i < attempts; i++) {
+    const target = endpoints[i % endpoints.length];
+    if (i > 0) await sleep(Math.min(4000, 400 * 2 ** Math.floor(i / endpoints.length)));
+    try {
+      const out = await fetchOnce(target, init, timeout);
+      if (out.ok && src.transform) out.body = src.transform(out.body);
+      if (out.ok || !RETRYABLE.has(out.status)) {
+        if (ck && out.ok) LOOKUP_CACHE.set(ck, { at: Date.now(), value: out });
+        return out;
+      }
+      last = Object.assign(new Error(`Upstream ${name}: HTTP ${out.status}`), { status: 502, code: out.status });
+    } catch (err) {
+      last = Object.assign(
+        new Error(err.name === "AbortError"
+          ? `Upstream ${name} timed out after ${timeout / 1000}s`
+          : err.message),
+        { status: 502 }
+      );
+    }
   }
+  // The agent is told the server retries for it, so the error has to say what was
+  // actually spent — otherwise a single "HTTP 429" reads like one unlucky call.
+  if (last && attempts > 1) {
+    last.message += ` (after ${attempts} attempts across ${endpoints.length} endpoint${endpoints.length > 1 ? "s" : ""})`;
+  }
+  throw last;
 }
+
 
 /* ------------------------------------------------------------------ *
  * Username enumeration (WhatsMyName)
@@ -334,6 +488,77 @@ async function enumerateUsername(username, { categories, limit } = {}) {
 }
 
 /* ------------------------------------------------------------------ *
+ * Image fetch.
+ *
+ * Finding a photo of a candidate location is only half of it — the model has to
+ * be able to look at it, which means the bytes have to reach the browser and go
+ * back up as an image block. Browsers can't read cross-origin image bytes, so
+ * the fetch happens here.
+ *
+ * Strictly allowlisted by host: these are the image CDNs behind the photo
+ * sources above and nothing else. Anything not on the list is refused, so this
+ * cannot be used to reach an arbitrary URL.
+ * ------------------------------------------------------------------ */
+
+const UPSTREAM_UA = "AwareOSINT/1.0 (+https://github.com/tacticalfunds/Aware)";
+
+const IMAGE_HOSTS = [
+  /^upload\.wikimedia\.org$/,
+  /^commons\.wikimedia\.org$/,
+  /^api\.openverse\.org$/,
+  /^([a-z0-9-]+\.)*mapillary\.com$/,
+  /^scontent[a-z0-9.-]*\.fbcdn\.net$/,
+  /^([a-z0-9-]+\.)*staticflickr\.com$/
+];
+
+const IMAGE_MAX_BYTES = 5 * 1024 * 1024;
+const IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
+
+async function fetchImage(rawUrl) {
+  let u;
+  try { u = new URL(String(rawUrl)); } catch { throw Object.assign(new Error("Not a URL"), { status: 400 }); }
+  if (u.protocol !== "https:") throw Object.assign(new Error("HTTPS only"), { status: 400 });
+  if (!IMAGE_HOSTS.some(re => re.test(u.hostname))) {
+    throw Object.assign(new Error(`Host not allowed for image fetch: ${u.hostname}`), { status: 403 });
+  }
+
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 20000);
+  try {
+    const res = await fetch(u.toString(), {
+      headers: { "User-Agent": UPSTREAM_UA, Accept: "image/*" },
+      redirect: "follow",
+      signal: controller.signal
+    });
+    if (!res.ok) throw Object.assign(new Error(`Upstream ${res.status}`), { status: 502 });
+
+    const type = (res.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
+    if (!IMAGE_TYPES.has(type)) {
+      throw Object.assign(new Error(`Not a supported image type: ${type || "unknown"}`), { status: 415 });
+    }
+    const declared = Number(res.headers.get("content-length"));
+    if (declared && declared > IMAGE_MAX_BYTES) {
+      throw Object.assign(new Error(`Image too large: ${Math.round(declared / 1024)} KB`), { status: 413 });
+    }
+
+    const buf = Buffer.from(await res.arrayBuffer());
+    // Re-check after download: content-length is optional and can lie.
+    if (buf.length > IMAGE_MAX_BYTES) {
+      throw Object.assign(new Error(`Image too large: ${Math.round(buf.length / 1024)} KB`), { status: 413 });
+    }
+    return { media_type: type, bytes: buf.length, data: buf.toString("base64") };
+  } catch (err) {
+    if (err.status) throw err;
+    throw Object.assign(
+      new Error(err.name === "AbortError" ? "Image fetch timed out" : err.message),
+      { status: 502 }
+    );
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/* ------------------------------------------------------------------ *
  * Basemap tiles.
  *
  * The plan view draws on real aerial imagery, which a browser cannot fetch
@@ -358,7 +583,6 @@ const BASEMAPS = {
   }
 };
 
-const TILE_UA = "AwareOSINT/1.0 (+https://github.com/tacticalfunds/Aware)";
 const TILE_CACHE = new Map();     // "layer/z/x/y" -> {type, body}
 const TILE_CACHE_MAX = 400;       // ~10 MB of 256px JPEG/PNG
 
@@ -392,7 +616,7 @@ async function serveTile(res, parts) {
 
   try {
     const upstream = await fetch(map.url(z, x, y), {
-      headers: { "User-Agent": TILE_UA, Accept: "image/*" },
+      headers: { "User-Agent": UPSTREAM_UA, Accept: "image/*" },
       signal: AbortSignal.timeout(12000)
     });
     if (!upstream.ok) throw new Error(`upstream ${upstream.status}`);
@@ -502,6 +726,27 @@ const server = http.createServer(async (req, res) => {
         const result = await runLookup(source, params);
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify(result));
+      } catch (err) {
+        res.writeHead(err.status || 500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+    });
+    return;
+  }
+
+  if (pathname === "/api/image") {
+    if (req.method !== "POST") {
+      res.writeHead(405, { "Content-Type": "application/json" }).end(JSON.stringify({ error: "POST only" }));
+      return;
+    }
+    let raw = "";
+    req.on("data", c => { raw += c; if (raw.length > 4096) req.destroy(); });
+    req.on("end", async () => {
+      try {
+        const { url } = JSON.parse(raw || "{}");
+        const out = await fetchImage(url);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true, ...out }));
       } catch (err) {
         res.writeHead(err.status || 500, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: err.message }));

@@ -57,9 +57,19 @@ the folder with any static file server (e.g. `python3 -m http.server`).
   Optionally set any of these as Railway environment variables to enable the
   credentialed sources for everyone using your deployment, without anyone pasting
   keys into a browser: `SHODAN_KEY`, `VIRUSTOTAL_KEY`, `ABUSEIPDB_KEY`,
-  `ETHERSCAN_KEY`, `HIBP_KEY`, `VERIPHONE_KEY`, `IPQS_KEY`, `GITHUB_TOKEN`.
+  `ETHERSCAN_KEY`, `HIBP_KEY`, `VERIPHONE_KEY`, `IPQS_KEY`, `GITHUB_TOKEN`,
+  `MAPILLARY_TOKEN` (free — turns street-level imagery from a manual handoff into
+  something the agent looks at itself), `BRAVE_KEY` (free tier — a web search that
+  isn't rate-limited).
   `GET /api/sources` reports which are configured, along with the basemap layers
   available to the plan view.
+
+Overpass — the OSM query backend behind `osm_nearby` and `osm_find_named` — rate
+limits hard (429) and sheds load (504). `server.js` retries across four public
+mirrors with a growing backoff and caches successful queries for ten minutes, so
+a transient outage costs the agent nothing; only a genuine dead end reaches it,
+and the error says how many attempts were spent. Investigations used to burn their
+whole step budget on this.
 
 Static hosting (GitHub Pages, Netlify drop) still works, but without `server.js`
 there's no proxy — the agent falls back to the handful of CORS-friendly sources plus
@@ -150,6 +160,34 @@ Two tools that let the agent *show* its reasoning rather than assert it:
   Without `server.js` — or if the imagery is unreachable — the diagram degrades to the
   geometry on a plain grid and says so. Inline it renders at chat width; **⤢ Enlarge**
   lifts it into a full-viewport overlay (Escape or a click outside puts it back).
+
+#### Photographs of places — `assets/js/tools/photos.js`
+
+The difference between naming a location and verifying one. These return **actual
+pixels the model looks at**: images ride back inside the tool result as image
+blocks, so on its next turn the agent is comparing a photo of the candidate place
+against the photo in hand, rather than handing the user a list of links.
+
+- **`place_photos`** — every geotagged Wikimedia Commons photo within a radius of a
+  point, or a name search when there are no coordinates yet, falling back to
+  Openverse (Flickr and friends) where Commons is thin. Thumbnails are fetched
+  server-side and attached as images; everything found is also listed as text, so
+  nothing is silently dropped.
+- **`street_imagery`** — Mapillary frames around a point, each carrying the compass
+  angle it was shot at, sorted by how close that heading is to the camera bearing
+  the agent derived. Without `MAPILLARY_TOKEN` it falls back to handing the user
+  prefilled Street View / Mapillary / KartaView links.
+- **`web_search`** — Brave when `BRAVE_KEY` is set, otherwise a best-effort
+  DuckDuckGo scrape. When DuckDuckGo serves the server a bot challenge the tool
+  says so explicitly: "could not check" and "nothing found" are different findings
+  and the agent is told not to confuse them.
+
+Images cost roughly 1.1k tokens each at 800px, so the defaults are low (3, max 6)
+and the model is told to raise them only when it is comparing closely.
+
+Fetching runs through `POST /api/image`, which is **strictly allowlisted by host**
+— the image CDNs behind those sources and nothing else, HTTPS only, `image/*` only,
+5 MB cap. It cannot be used to reach an arbitrary URL.
 
 #### Geolocation tools — `assets/js/tools/geo.js`
 

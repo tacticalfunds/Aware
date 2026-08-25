@@ -14,7 +14,13 @@
  * hand back specific manual tools for the many sources that have no API.
  */
 
-const AGENT_MAX_STEPS = 12;
+/*
+ * A geolocation that verifies its own candidates costs steps: find anchors, pull
+ * photos of each, compare, discard, try the next. Twelve was not enough to get
+ * past the first candidate — a run could spend the whole budget on upstream
+ * retries and never reach a conclusion.
+ */
+const AGENT_MAX_STEPS = 26;
 const AGENT_MAX_HISTORY = 40;
 
 /**
@@ -48,7 +54,9 @@ const TOOL_GROUPS = [
   { tools: typeof METADATA_TOOLS !== "undefined" ? METADATA_TOOLS : [],
     executors: typeof METADATA_EXECUTORS !== "undefined" ? METADATA_EXECUTORS : {} },
   { tools: typeof VISUAL_TOOLS !== "undefined" ? VISUAL_TOOLS : [],
-    executors: typeof VISUAL_EXECUTORS !== "undefined" ? VISUAL_EXECUTORS : {} }
+    executors: typeof VISUAL_EXECUTORS !== "undefined" ? VISUAL_EXECUTORS : {} },
+  { tools: typeof PHOTO_TOOLS !== "undefined" ? PHOTO_TOOLS : [],
+    executors: typeof PHOTO_EXECUTORS !== "undefined" ? PHOTO_EXECUTORS : {} }
 ];
 
 const GROUPED_EXECUTORS = Object.assign({}, ...TOOL_GROUPS.map(g => g.executors));
@@ -201,7 +209,7 @@ const AGENT_TOOLS = [
   },
   {
     name: "web_mentions",
-    description: "Searches Hacker News (via Algolia) and Wikipedia for a term. Use to find public discussion, reports or reference material about a company, domain, person or scam.",
+    description: "Searches Hacker News (via Algolia) and Wikipedia only — NOT the web at large. Good for tech discussion and encyclopedic reference; useless for local businesses, street names or anything regional. For those use web_search instead, and do not read an empty result here as 'nothing exists'.",
     input_schema: {
       type: "object",
       properties: { query: { type: "string" } },
@@ -622,6 +630,37 @@ Method:
   which anchors carried the conclusion. If only one name resolves, say you have a
   bearing but not a fix rather than presenting a point as if it were confirmed.
 
+- LOOK AT THE PLACE. A candidate you have only named is not verified. Before you
+  report any location, call place_photos on it — by coordinates if you have them,
+  by name if you don't — and street_imagery for the view from the ground. Those
+  come back as photographs you can actually see. Compare them against the attached
+  image and say, feature by feature, what matches and what doesn't: the building
+  shape, the roofline, the sign, the kerb, the street furniture.
+
+  A match confirms. A mismatch KILLS the candidate — say so, drop it, and go to the
+  next one. Do not report a place you never looked at, and never let a plausible
+  story about a neighbourhood stand in for a photograph of it.
+
+- Keep going on your own evidence. Every result is a lead into the next search:
+  an address gives you coordinates, coordinates give you photos, a photo gives you
+  a second business name, that name gives you another anchor. When you have several
+  candidate districts, work them one at a time — photos first — instead of listing
+  all three and asking the user which to pursue. You have the budget to check them
+  all, so check them.
+
+  A guess from architecture alone is the weakest thing you can produce. If that is
+  all you have, it is the START of the work, not the end: search for the specific
+  detail (web_search the exact sign text, the truck-restriction wording, the unusual
+  roofline), pull photos of your top candidate, and let the pixels settle it.
+
+- Tool failures are not answers. Overpass rate-limits and times out; the server
+  already retries across mirrors before you ever see an error, so a failure that
+  reaches you means that route is genuinely unavailable right now. Route around it:
+  geocode an address instead of searching a name, use place_photos or web_search,
+  or come back to it a step later. Never end an investigation with "the backend was
+  down" while other tools were still untried, and never present an unchecked
+  candidate as though the outage confirmed it.
+
 - The other geo tools need coordinates before they can run. Once you have a camera
   position, verify it with sun_position against visible shadows and weather_history
   against a claimed date. If nothing yields a candidate at all, say so plainly rather
@@ -748,6 +787,25 @@ async function runInvestigation({ apiKey, model, task, image, liveKeys = {}, onE
       onEvent({ type: "tool_call", name: call.name, input: call.input });
       try {
         const out = await executeAgentTool(call.name, call.input, liveKeys, { onManualRequest, onVisual });
+
+        // An executor that found photographs returns { text, images }. Those go
+        // back as image blocks inside the tool result, which is what lets the
+        // model look at a candidate location instead of just reading its name.
+        if (out && typeof out === "object" && Array.isArray(out.images)) {
+          onEvent({ type: "tool_result", name: call.name, ok: true, text: out.text, images: out.images });
+          return {
+            type: "tool_result",
+            tool_use_id: call.id,
+            content: [
+              ...out.images.map(img => ({
+                type: "image",
+                source: { type: "base64", media_type: img.media_type, data: img.data }
+              })),
+              { type: "text", text: String(out.text || "(no data)") }
+            ]
+          };
+        }
+
         onEvent({ type: "tool_result", name: call.name, ok: true, text: out });
         return { type: "tool_result", tool_use_id: call.id, content: String(out || "(no data)") };
       } catch (err) {
@@ -760,6 +818,8 @@ async function runInvestigation({ apiKey, model, task, image, liveKeys = {}, onE
     messages.push({ role: "user", content: results });
   }
 
-  onEvent({ type: "text", text: `_Stopped after ${AGENT_MAX_STEPS} steps to bound cost. Ask me to continue if you want more._` });
+  onEvent({ type: "text", text:
+    `_Stopped after ${AGENT_MAX_STEPS} tool steps to bound cost — this is a budget limit, not a conclusion. ` +
+    `Say **continue** and I'll pick up from where the working left off._` });
   onEvent({ type: "done" });
 }
