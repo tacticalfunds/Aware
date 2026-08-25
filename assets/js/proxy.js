@@ -11,6 +11,7 @@
 const Proxy = {
   available: false,
   sources: {},
+  basemaps: [],
 
   /** One probe at startup; failure just means we stay in direct-fetch mode. */
   async detect() {
@@ -20,11 +21,17 @@ const Proxy = {
       const data = await res.json();
       this.available = !!data.proxy;
       this.sources = data.sources || {};
+      this.basemaps = data.basemaps || [];
       return this.available;
     } catch {
       this.available = false;
       return false;
     }
+  },
+
+  /** True when the server can proxy basemap tiles for the plan view. */
+  hasBasemap(layer) {
+    return this.available && this.basemaps.includes(layer);
   },
 
   /** True when the proxy exists AND that source has its key configured. */

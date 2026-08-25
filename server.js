@@ -334,6 +334,86 @@ async function enumerateUsername(username, { categories, limit } = {}) {
 }
 
 /* ------------------------------------------------------------------ *
+ * Basemap tiles.
+ *
+ * The plan view draws on real aerial imagery, which a browser cannot fetch
+ * cross-origin into an SVG without tainting it. Same reasoning as the lookup
+ * proxy: the client asks for a layer name and z/x/y, never a URL.
+ *
+ * Both upstreams are free to use with attribution (rendered on the diagram).
+ * Requests are cached in memory so redrawing a diagram, or two diagrams over
+ * the same block, does not re-hit them — OpenStreetMap's tile usage policy
+ * asks for exactly that, and for an identifying User-Agent.
+ * ------------------------------------------------------------------ */
+
+const BASEMAPS = {
+  // Esri World Imagery. Note the y/x order — Esri puts row before column.
+  satellite: {
+    url: (z, x, y) => `https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/${z}/${y}/${x}`,
+    maxZoom: 19
+  },
+  street: {
+    url: (z, x, y) => `https://tile.openstreetmap.org/${z}/${x}/${y}.png`,
+    maxZoom: 19
+  }
+};
+
+const TILE_UA = "AwareOSINT/1.0 (+https://github.com/tacticalfunds/Aware)";
+const TILE_CACHE = new Map();     // "layer/z/x/y" -> {type, body}
+const TILE_CACHE_MAX = 400;       // ~10 MB of 256px JPEG/PNG
+
+async function serveTile(res, parts) {
+  const [layer, zs, xs, ys] = parts;
+  const map = BASEMAPS[layer];
+  const z = Number(zs), x = Number(xs), y = Number(String(ys).replace(/\.(png|jpg|jpeg)$/i, ""));
+
+  if (!map) {
+    res.writeHead(404, { "Content-Type": "application/json" })
+      .end(JSON.stringify({ error: `Unknown basemap "${layer}"` }));
+    return;
+  }
+  const n = 2 ** z;
+  const valid = Number.isInteger(z) && z >= 0 && z <= map.maxZoom &&
+    Number.isInteger(x) && x >= 0 && x < n &&
+    Number.isInteger(y) && y >= 0 && y < n;
+  if (!valid) {
+    res.writeHead(400, { "Content-Type": "application/json" })
+      .end(JSON.stringify({ error: "Tile coordinates out of range" }));
+    return;
+  }
+
+  const key = `${layer}/${z}/${x}/${y}`;
+  const hit = TILE_CACHE.get(key);
+  if (hit) {
+    res.writeHead(200, { "Content-Type": hit.type, "Cache-Control": "public, max-age=86400" });
+    res.end(hit.body);
+    return;
+  }
+
+  try {
+    const upstream = await fetch(map.url(z, x, y), {
+      headers: { "User-Agent": TILE_UA, Accept: "image/*" },
+      signal: AbortSignal.timeout(12000)
+    });
+    if (!upstream.ok) throw new Error(`upstream ${upstream.status}`);
+    const type = upstream.headers.get("content-type") || "image/png";
+    if (!type.startsWith("image/")) throw new Error(`upstream returned ${type}`);
+    const body = Buffer.from(await upstream.arrayBuffer());
+
+    if (TILE_CACHE.size >= TILE_CACHE_MAX) TILE_CACHE.delete(TILE_CACHE.keys().next().value);
+    TILE_CACHE.set(key, { type, body });
+
+    res.writeHead(200, { "Content-Type": type, "Cache-Control": "public, max-age=86400" });
+    res.end(body);
+  } catch (err) {
+    // The client draws its abstract grid instead, so this is a degraded render,
+    // not a broken one.
+    res.writeHead(502, { "Content-Type": "application/json" })
+      .end(JSON.stringify({ error: `Tile fetch failed: ${err.message}` }));
+  }
+}
+
+/* ------------------------------------------------------------------ *
  * Static file serving
  * ------------------------------------------------------------------ */
 
@@ -379,6 +459,7 @@ const server = http.createServer(async (req, res) => {
     res.end(JSON.stringify({
       proxy: true,
       sources: availableSources(),
+      basemaps: Object.keys(BASEMAPS),
       username_sites: (loadWmn().sites || []).length
     }));
     return;
@@ -426,6 +507,17 @@ const server = http.createServer(async (req, res) => {
         res.end(JSON.stringify({ error: err.message }));
       }
     });
+    return;
+  }
+
+  if (pathname.startsWith("/api/tile/")) {
+    const parts = pathname.slice("/api/tile/".length).split("/");
+    if (parts.length !== 4) {
+      res.writeHead(400, { "Content-Type": "application/json" })
+        .end(JSON.stringify({ error: "Expected /api/tile/{layer}/{z}/{x}/{y}" }));
+      return;
+    }
+    await serveTile(res, parts);
     return;
   }
 

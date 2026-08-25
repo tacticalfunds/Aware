@@ -5,8 +5,10 @@
  *
  *   annotate_image      boxes drawn over the attached photo, marking the exact
  *                       details the conclusion rests on
- *   plot_triangulation  a plan (aerial) view of the located anchors, the derived
- *                       camera position and its view cone
+ *   plot_triangulation  a survey-style plan view drawn over real aerial imagery:
+ *                       numbered control points, the camera station, labelled
+ *                       sight lines, view cone and error ellipse, with OSM
+ *                       building and road vectors traced over the photography
  *
  * Both hand a spec to the UI via ctx.onVisual, which renders SVG into the trace.
  * Coordinates for annotations are normalised 0-1 so they survive any display size.
@@ -56,9 +58,11 @@ const VISUAL_TOOLS = [
   {
     name: "plot_triangulation",
     description:
-      "Draws an aerial/plan view of your geolocation working: each located anchor as a labelled point, the distances and bearings between them, and — if you give one — the derived camera position with its view cone. " +
-      "Use it after locating two or more anchors with osm_find_named, to show how they fix the camera position. " +
-      "It also reports the computed distances back to you, so it doubles as a check on your geometry.",
+      "Draws a survey-style plan view over real aerial imagery of the site: each located anchor as a numbered control point, the camera station, a sight line to every anchor labelled with its distance and bearing, the view cone, and the error ellipse. " +
+      "OpenStreetMap building footprints and roads are traced over the photography so the user can check the fix against the actual ground. " +
+      "Use it once you have located one or more anchors with osm_find_named or geocode. " +
+      "ALWAYS pass `camera` — an estimated station with an honest uncertainty_m is far more useful than none, and without it the diagram is just a scatter of points with nothing to show how the position was fixed. " +
+      "It reports the computed distances and bearings back to you, so it doubles as a check on your geometry: the bearings must match the left-to-right order of the features in the photo.",
     input_schema: {
       type: "object",
       properties: {
@@ -77,7 +81,9 @@ const VISUAL_TOOLS = [
         },
         camera: {
           type: "object",
-          description: "Derived camera position, if you have one.",
+          description:
+            "The derived camera station. Give your best estimate even when it is rough — say so with uncertainty_m rather than omitting it. " +
+            "Work it out from the anchors: stand where every anchor falls in the photo's left-to-right order at a plausible distance for its apparent size.",
           properties: {
             lat: { type: "number" },
             lon: { type: "number" },
@@ -87,7 +93,12 @@ const VISUAL_TOOLS = [
           },
           required: ["lat", "lon"]
         },
-        caption: { type: "string" }
+        basemap: {
+          type: "string",
+          enum: ["satellite", "street"],
+          description: "Backdrop imagery. Satellite (default) for outdoor scenes; street for dense urban blocks where labelled roads read better."
+        },
+        caption: { type: "string", description: "One line on what the diagram shows and how firm the fix is." }
       },
       required: ["anchors"]
     }
@@ -125,7 +136,12 @@ const VISUAL_EXECUTORS = {
     if (!anchors.length) return "No valid anchors — each needs a name, lat and lon.";
     if (!ctx.onVisual) return "No display channel available, so the plan view can't be shown.";
 
-    ctx.onVisual({ type: "triangulation", anchors, camera: input.camera || null, caption: input.caption || "" });
+    const camera = input.camera && typeof input.camera.lat === "number" && typeof input.camera.lon === "number"
+      ? input.camera : null;
+    ctx.onVisual({
+      type: "triangulation", anchors, camera,
+      caption: input.caption || "", basemap: input.basemap || "satellite"
+    });
 
     // Report the geometry back so the agent can sanity-check its own reasoning.
     const R = 6371000, rad = d => d * Math.PI / 180, deg = r => r * 180 / Math.PI;
@@ -138,19 +154,24 @@ const VISUAL_EXECUTORS = {
       return { d, brg: (deg(Math.atan2(y, x)) + 360) % 360 };
     };
 
-    const out = [`Plan view drawn with ${anchors.length} anchor(s)${input.camera ? " and the camera position" : ""}.`];
+    const out = [`Plan view drawn over ${input.basemap === "street" ? "street" : "aerial"} imagery with ` +
+      `${anchors.length} control point(s)${camera ? " and the camera station" : ""}.`];
     for (let i = 0; i < anchors.length; i++) {
       for (let j = i + 1; j < anchors.length; j++) {
         const { d, brg } = between(anchors[i], anchors[j]);
         out.push(`${anchors[i].name} → ${anchors[j].name}: ${d < 1000 ? `${d.toFixed(0)} m` : `${(d / 1000).toFixed(2)} km`} at ${brg.toFixed(0)}°`);
       }
     }
-    if (input.camera) {
+    if (camera) {
       for (const a of anchors) {
-        const { d, brg } = between(input.camera, a);
+        const { d, brg } = between(camera, a);
         out.push(`Camera → ${a.name}: ${d.toFixed(0)} m at ${brg.toFixed(0)}°`);
       }
-      out.push(`Check these against the photo: the bearings should match the left-to-right order of the features in frame, and nearer features should appear larger.`);
+      out.push(`Check these against the photo: the bearings should match the left-to-right order of the features in frame, and nearer features should appear larger. ` +
+        `If they don't, the station is wrong — move it and call this again.`);
+    } else {
+      out.push(`No camera station was given, so the diagram has no sight lines, no view cone and nothing showing how the position was fixed — ` +
+        `which is the part worth looking at. Estimate a station from the anchors and call this again with camera {lat, lon, bearing, uncertainty_m}.`);
     }
     return out.join("\n");
   }

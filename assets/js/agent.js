@@ -582,9 +582,11 @@ Method:
   re-saved and is worth flagging.
 - Show your working visually. Once you have identified the useful details, call
   annotate_image to box them on the photo so the user can check what you read. Once
-  you have two or more located anchors, call plot_triangulation to draw the plan view
-  with your derived camera position. Both make the reasoning inspectable instead of
-  asking the user to take it on trust.
+  you have located any anchor, call plot_triangulation — it draws your working over
+  real aerial imagery of the site. Always pass the camera object: the sight lines,
+  view cone and error ellipse are the whole point of the diagram, and without them it
+  is a scatter of dots. Both make the reasoning inspectable instead of asking the user
+  to take it on trust.
 - On any image whose origin or location is unknown, run reverse_image_search early —
   it queries five engines at once and is usually the fastest route to an answer.
   When the results come back, say explicitly what corroborates across two or more
@@ -609,6 +611,11 @@ Method:
   5. Sanity-check the result with osm_nearby: everything visible in the photo should
      exist near your proposed point, and anything prominent that is mapped there but
      absent from the photo is evidence against it.
+  6. Draw it: plot_triangulation with every anchor AND the camera object — lat, lon,
+     the bearing you derived in step 3, and uncertainty_m. The tool hands back the
+     distance and bearing to each anchor; read them. If that order does not match the
+     left-to-right order of the features in the photo, your station is wrong: move it
+     and plot again.
 
   State the camera position with an honest error radius (a few metres if three
   anchors agree, tens of metres from one anchor and a guessed distance), and say

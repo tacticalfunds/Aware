@@ -58,11 +58,13 @@ the folder with any static file server (e.g. `python3 -m http.server`).
   credentialed sources for everyone using your deployment, without anyone pasting
   keys into a browser: `SHODAN_KEY`, `VIRUSTOTAL_KEY`, `ABUSEIPDB_KEY`,
   `ETHERSCAN_KEY`, `HIBP_KEY`, `VERIPHONE_KEY`, `IPQS_KEY`, `GITHUB_TOKEN`.
-  `GET /api/sources` reports which are configured.
+  `GET /api/sources` reports which are configured, along with the basemap layers
+  available to the plan view.
 
 Static hosting (GitHub Pages, Netlify drop) still works, but without `server.js`
 there's no proxy — the agent falls back to the handful of CORS-friendly sources plus
-the manual handoff, and the mode badge drops the "· proxy" suffix.
+the manual handoff, the mode badge drops the "· proxy" suffix, and the plan view
+draws its geometry on a plain grid instead of aerial imagery.
 
 ## How the chatbot works
 
@@ -127,10 +129,27 @@ Two tools that let the agent *show* its reasoning rather than assert it:
   details the conclusion rests on (amber signs, teal landmarks, violet vehicles,
   yellow shadows, green terrain), with a matching legend. Coordinates are normalised
   0–1 and clamped into frame.
-- **`plot_triangulation`** — an aerial plan view of the located anchors, the derived
-  camera position, its view cone and error radius, with a north arrow and scale bar.
+- **`plot_triangulation`** — a survey-style plan view drawn **over real aerial imagery
+  of the site**: numbered magenta control points for each located anchor, the camera
+  station, a sight line to every anchor labelled with its distance and bearing, the
+  view cone, the error ellipse, a lat/lon graticule, scale bar, north arrow and
+  imagery attribution. OpenStreetMap building footprints (amber) and ways (green) are
+  fetched from Overpass and traced over the photography, so the fix can be checked
+  against the actual ground.
+
   It also returns every pairwise distance and bearing to the agent, so it doubles as a
-  check on its own geometry.
+  check on its own geometry — the bearings have to match the left-to-right order of
+  the features in the photo, and the agent is told to move the station and re-plot if
+  they don't.
+
+  Imagery comes through `GET /api/tile/{layer}/{z}/{x}/{y}` (`satellite` = Esri World
+  Imagery, `street` = OpenStreetMap), proxied and cached by `server.js` for the same
+  reason as the lookup proxy: the client names a layer and tile, never a URL. Zoom is
+  chosen one integer step tighter than fits and then scaled down to land the scene
+  exactly in frame, so the diagram fills itself without stretching the imagery.
+  Without `server.js` — or if the imagery is unreachable — the diagram degrades to the
+  geometry on a plain grid and says so. Inline it renders at chat width; **⤢ Enlarge**
+  lifts it into a full-viewport overlay (Escape or a click outside puts it back).
 
 #### Geolocation tools — `assets/js/tools/geo.js`
 

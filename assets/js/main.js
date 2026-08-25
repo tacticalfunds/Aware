@@ -705,91 +705,457 @@ function renderAnnotations(regions) {
   return el;
 }
 
-/**
- * Plan view of the geolocation working. Projects lat/lon onto a local metre
- * grid (equirectangular, with the longitude scaled by cos(lat) — accurate enough
- * over the few hundred metres these plots cover).
+/* ---------------- Plan view: annotated aerial imagery ---------------- */
+
+/*
+ * Web Mercator, the projection every slippy-map tile is cut to. World pixel
+ * coordinates at zoom z run 0..256*2^z; a tile is the 256px square at
+ * (floor(x/256), floor(y/256)), which is what /api/tile serves.
  */
-function renderTriangulation({ anchors, camera, caption }) {
-  const pts = [...anchors.map(a => ({ ...a, kind: "anchor" }))];
-  if (camera) pts.push({ ...camera, name: "Camera", kind: "camera" });
+const TILE_PX = 256;
+const PLAN_W = 680, PLAN_H = 460;
+const PLAN_MAX_Z = 18;      // ~0.5 m/px — tighter than this and a single point fills the frame
+const PLAN_MAX_TILES = 30;
 
-  const lat0 = pts.reduce((s, p) => s + p.lat, 0) / pts.length;
-  const lon0 = pts.reduce((s, p) => s + p.lon, 0) / pts.length;
-  const mPerDegLat = 111320, mPerDegLon = 111320 * Math.cos(lat0 * Math.PI / 180);
-  const xy = pts.map(p => ({ ...p, mx: (p.lon - lon0) * mPerDegLon, my: -(p.lat - lat0) * mPerDegLat }));
+const lonToWorldX = (lon, z) => (lon + 180) / 360 * TILE_PX * 2 ** z;
+const latToWorldY = (lat, z) => {
+  const s = Math.sin(Math.max(-85.05, Math.min(85.05, lat)) * Math.PI / 180);
+  return (0.5 - Math.log((1 + s) / (1 - s)) / (4 * Math.PI)) * TILE_PX * 2 ** z;
+};
+const worldXToLon = (x, z) => x / (TILE_PX * 2 ** z) * 360 - 180;
+const worldYToLat = (y, z) => {
+  const n = Math.PI - 2 * Math.PI * y / (TILE_PX * 2 ** z);
+  return 180 / Math.PI * Math.atan(0.5 * (Math.exp(n) - Math.exp(-n)));
+};
 
-  const pad = 46;
-  const span = Math.max(
-    40, // never zoom in so far that two near-identical points fill the frame
-    ...xy.map(p => Math.abs(p.mx)), ...xy.map(p => Math.abs(p.my))
-  ) * 2.4;
-  const S = 300, scale = (S - pad * 2) / span;
-  const px = p => S / 2 + p.mx * scale, py = p => S / 2 + p.my * scale;
+const D2R = Math.PI / 180, R2D = 180 / Math.PI, EARTH_R = 6371000;
 
-  const cam = xy.find(p => p.kind === "camera");
-  let cone = "";
-  if (cam && typeof cam.bearing === "number") {
-    const fov = cam.fov || 65, len = (S - pad * 2) * 0.55;
-    const a1 = (cam.bearing - fov / 2 - 90) * Math.PI / 180;
-    const a2 = (cam.bearing + fov / 2 - 90) * Math.PI / 180;
-    cone = `<path d="M ${px(cam)} ${py(cam)} L ${px(cam) + Math.cos(a1) * len} ${py(cam) + Math.sin(a1) * len}
-              A ${len} ${len} 0 0 1 ${px(cam) + Math.cos(a2) * len} ${py(cam) + Math.sin(a2) * len} Z"
-              fill="#4fd1c522" stroke="#4fd1c5" stroke-width="1" stroke-dasharray="3 3"/>`;
+function planDistance(a, b) {
+  const φ1 = a.lat * D2R, φ2 = b.lat * D2R;
+  const Δφ = (b.lat - a.lat) * D2R, Δλ = (b.lon - a.lon) * D2R;
+  const h = Math.sin(Δφ / 2) ** 2 + Math.cos(φ1) * Math.cos(φ2) * Math.sin(Δλ / 2) ** 2;
+  return 2 * EARTH_R * Math.atan2(Math.sqrt(h), Math.sqrt(1 - h));
+}
+function planBearing(a, b) {
+  const φ1 = a.lat * D2R, φ2 = b.lat * D2R, Δλ = (b.lon - a.lon) * D2R;
+  const y = Math.sin(Δλ) * Math.cos(φ2);
+  const x = Math.cos(φ1) * Math.sin(φ2) - Math.sin(φ1) * Math.cos(φ2) * Math.cos(Δλ);
+  return (Math.atan2(y, x) * R2D + 360) % 360;
+}
+function planDestination(lat, lon, brgDeg, distM) {
+  const φ1 = lat * D2R, λ1 = lon * D2R, θ = brgDeg * D2R, δ = distM / EARTH_R;
+  const φ2 = Math.asin(Math.sin(φ1) * Math.cos(δ) + Math.cos(φ1) * Math.sin(δ) * Math.cos(θ));
+  const λ2 = λ1 + Math.atan2(Math.sin(θ) * Math.sin(δ) * Math.cos(φ1),
+                             Math.cos(δ) - Math.sin(φ1) * Math.sin(φ2));
+  return { lat: φ2 * R2D, lon: ((λ2 * R2D + 540) % 360) - 180 };
+}
+const fmtMetres = m => m < 1000 ? `${Math.round(m)} m` : `${(m / 1000).toFixed(2)} km`;
+const fmtDeg = d => `${d.toFixed(0)}°`;
+/** Decimal degrees with a hemisphere letter, the way a map margin writes them. */
+const fmtLat = v => `${Math.abs(v).toFixed(5)}° ${v >= 0 ? "N" : "S"}`;
+const fmtLon = v => `${Math.abs(v).toFixed(5)}° ${v >= 0 ? "E" : "W"}`;
+
+/** Largest zoom at which every point still sits inside the frame with a margin. */
+function chooseZoom(pts) {
+  const lats = pts.map(p => p.lat), lons = pts.map(p => p.lon);
+  const [minLat, maxLat] = [Math.min(...lats), Math.max(...lats)];
+  const [minLon, maxLon] = [Math.min(...lons), Math.max(...lons)];
+  for (let z = PLAN_MAX_Z; z >= 1; z--) {
+    const w = lonToWorldX(maxLon, z) - lonToWorldX(minLon, z);
+    const h = latToWorldY(minLat, z) - latToWorldY(maxLat, z);
+    if (w <= PLAN_W * 0.74 && h <= PLAN_H * 0.74) return z;
   }
-  const rings = cam && cam.uncertainty_m
-    ? `<circle cx="${px(cam)}" cy="${py(cam)}" r="${Math.max(3, cam.uncertainty_m * scale)}"
-         fill="none" stroke="#4fd1c5" stroke-width="1" stroke-dasharray="2 3" opacity="0.7"/>`
-    : "";
+  return 1;
+}
 
-  const links = cam
-    ? xy.filter(p => p.kind === "anchor").map(a =>
-        `<line x1="${px(cam)}" y1="${py(cam)}" x2="${px(a)}" y2="${py(a)}"
-           stroke="#62728a" stroke-width="0.8" stroke-dasharray="2 2"/>`).join("")
-    : xy.length === 2
-      ? `<line x1="${px(xy[0])}" y1="${py(xy[0])}" x2="${px(xy[1])}" y2="${py(xy[1])}"
-           stroke="#62728a" stroke-width="0.8" stroke-dasharray="2 2"/>`
-      : "";
+/*
+ * Text over aerial imagery is unreadable without a halo — the backdrop is
+ * arbitrary. paint-order:stroke draws the outline *under* the glyph, so a fat
+ * dark stroke becomes a contour rather than eating the letterforms.
+ */
+const HALO = `paint-order="stroke" stroke="#04070c" stroke-width="2.6" stroke-linejoin="round"`;
 
-  // Scale bar: a round number of metres that fits comfortably.
-  const target = span / 4;
-  const nice = [5, 10, 20, 25, 50, 100, 200, 250, 500, 1000].reduce((b, v) =>
-    Math.abs(v - target) < Math.abs(b - target) ? v : b, 5);
+const PLAN_INK = {
+  anchor: "#ff3ea5",   // magenta — located features and the lines between them
+  camera: "#22d3ee",   // cyan    — the derived camera station
+  building: "#ffd54a", // amber   — OSM building footprints
+  road: "#3ddc84",     // green   — OSM ways
+  margin: "#dce6f2"
+};
+
+/**
+ * Plan view of the geolocation working, drawn over real aerial imagery: the
+ * located anchors as numbered control points, OSM building and road vectors
+ * traced over the photography, and — when the agent supplies one — the camera
+ * station with its sight lines, view cone and error ellipse.
+ *
+ * Returns the node synchronously (the trace renders it straight away); imagery
+ * tiles load as ordinary <image> requests and the OSM vector overlay is fetched
+ * afterwards and injected. Either can fail without breaking the diagram — the
+ * abstract grid underneath is the fallback, which is what a static deployment
+ * with no /api/tile gets.
+ */
+function renderTriangulation({ anchors, camera, caption, basemap }) {
+  const layer = basemap === "street" ? "street" : "satellite";
+  const cam = camera && typeof camera.lat === "number" ? { ...camera, name: "Camera station" } : null;
+
+  // The cone is sized to sit inside the evidence rather than reach past it — a
+  // cone longer than the anchors drags the bounding box out and zooms the whole
+  // map away from the thing being shown. Its tips still join the bounding box,
+  // so a bearing pointing away from every anchor can't be drawn off-frame.
+  const bboxPts = [...anchors];
+  let coneLen = 0;
+  if (cam) {
+    bboxPts.push(cam);
+    if (typeof cam.bearing === "number") {
+      coneLen = Math.max(40, 0.8 * Math.max(...anchors.map(a => planDistance(cam, a)), 50));
+      const fov = cam.fov || 65;
+      bboxPts.push(
+        planDestination(cam.lat, cam.lon, cam.bearing - fov / 2, coneLen),
+        planDestination(cam.lat, cam.lon, cam.bearing, coneLen),
+        planDestination(cam.lat, cam.lon, cam.bearing + fov / 2, coneLen)
+      );
+    }
+  }
+
+  /*
+   * Tiles only exist at integer zooms, and stepping between them doubles the
+   * scale — so fitting to the nearest integer alone leaves the scene filling
+   * anywhere from a third of the frame to all of it. Take the zoom one step
+   * tighter than fits, then scale the whole map down by k to land it exactly:
+   * the imagery is downsampled rather than stretched, which stays sharp.
+   */
+  const z = Math.min(chooseZoom(bboxPts) + 1, PLAN_MAX_Z + 1);
+  const wx = bboxPts.map(p => lonToWorldX(p.lon, z));
+  const wy = bboxPts.map(p => latToWorldY(p.lat, z));
+  const spanX = Math.max(...wx) - Math.min(...wx), spanY = Math.max(...wy) - Math.min(...wy);
+  const k = Math.min(1, Math.max(0.5,
+    Math.min(spanX > 1 ? PLAN_W * 0.74 / spanX : 1, spanY > 1 ? PLAN_H * 0.74 / spanY : 1)));
+
+  const cxW = (Math.min(...wx) + Math.max(...wx)) / 2;
+  const cyW = (Math.min(...wy) + Math.max(...wy)) / 2;
+  // World-pixel window the frame covers once scaled by k.
+  const halfW = PLAN_W / 2 / k, halfH = PLAN_H / 2 / k;
+  const x0 = cxW - halfW, y0 = cyW - halfH;
+
+  const sx = p => (lonToWorldX(p.lon, z) - x0) * k;
+  const sy = p => (latToWorldY(p.lat, z) - y0) * k;
+
+  const centreLat = worldYToLat(cyW, z);
+  const mPerPx = 156543.03392804097 * Math.cos(centreLat * D2R) / 2 ** z / k;
+  const bounds = {
+    north: worldYToLat(y0, z), south: worldYToLat(y0 + halfH * 2, z),
+    west: worldXToLon(x0, z), east: worldXToLon(x0 + halfW * 2, z)
+  };
+
+  /* --- imagery mosaic --- */
+  const tilesAvailable = typeof Proxy?.hasBasemap === "function" && Proxy.hasBasemap(layer);
+  let tiles = "";
+  if (tilesAvailable) {
+    const tx0 = Math.floor(x0 / TILE_PX), tx1 = Math.floor((x0 + halfW * 2) / TILE_PX);
+    const ty0 = Math.floor(y0 / TILE_PX), ty1 = Math.floor((y0 + halfH * 2) / TILE_PX);
+    const n = 2 ** z, count = (tx1 - tx0 + 1) * (ty1 - ty0 + 1);
+    if (count <= PLAN_MAX_TILES) {
+      const size = (TILE_PX * k + 0.6).toFixed(2);  // hairline overlap hides seams
+      for (let tx = tx0; tx <= tx1; tx++) {
+        for (let ty = ty0; ty <= ty1; ty++) {
+          // Wrap in x at the antimeridian; y has no wrap, it just runs out.
+          const col = ((tx % n) + n) % n;
+          if (ty < 0 || ty >= n) continue;
+          tiles += `<image class="plan-tile" href="/api/tile/${layer}/${z}/${col}/${ty}"
+            x="${((tx * TILE_PX - x0) * k).toFixed(2)}" y="${((ty * TILE_PX - y0) * k).toFixed(2)}"
+            width="${size}" height="${size}" preserveAspectRatio="none"/>`;
+        }
+      }
+    }
+  }
+
+  /* --- sight lines, camera to each anchor --- */
+  let sightlines = "", sightLabels = "";
+  if (cam) {
+    anchors.forEach((a, i) => {
+      const d = planDistance(cam, a), brg = planBearing(cam, a);
+      const [ax, ay, bx, by] = [sx(cam), sy(cam), sx(a), sy(a)];
+      sightlines +=
+        `<line x1="${ax}" y1="${ay}" x2="${bx}" y2="${by}" stroke="#04070c" stroke-width="3.4" opacity="0.55"/>
+         <line x1="${ax}" y1="${ay}" x2="${bx}" y2="${by}" stroke="${PLAN_INK.anchor}" stroke-width="1.5"/>`;
+      // Label rides along its line, flipped where it would otherwise read upside down.
+      let ang = Math.atan2(by - ay, bx - ax) * R2D;
+      if (ang > 90 || ang < -90) ang += 180;
+      const mx = ax + (bx - ax) * 0.58, my = ay + (by - ay) * 0.58;
+      // A short line has no room for the full caption without running over the
+      // markers at either end, so it gets the distance alone, set further off
+      // the line. The bearing is still in the tool's text output either way.
+      const lineLen = Math.hypot(bx - ax, by - ay);
+      const tight = lineLen < 150;
+      sightLabels +=
+        `<text x="${mx}" y="${my - (tight ? 11 : 5)}" transform="rotate(${ang.toFixed(1)} ${mx} ${my})"
+           text-anchor="middle" font-size="13" font-weight="600" fill="${PLAN_INK.anchor}" ${HALO}
+           >${tight ? fmtMetres(d) : `${i + 1} · ${fmtMetres(d)} @ ${fmtDeg(brg)}`}</text>`;
+    });
+  }
+
+  /* --- view cone and error ellipse --- */
+  let cone = "", ring = "", coneLabel = "";
+  if (cam && typeof cam.bearing === "number") {
+    const fov = cam.fov || 65;
+    const p1 = planDestination(cam.lat, cam.lon, cam.bearing - fov / 2, coneLen);
+    const p2 = planDestination(cam.lat, cam.lon, cam.bearing + fov / 2, coneLen);
+    const rPx = coneLen / mPerPx;
+    cone =
+      `<path d="M ${sx(cam)} ${sy(cam)} L ${sx(p1)} ${sy(p1)}
+         A ${rPx.toFixed(1)} ${rPx.toFixed(1)} 0 ${fov > 180 ? 1 : 0} 1 ${sx(p2)} ${sy(p2)} Z"
+         fill="${PLAN_INK.camera}" fill-opacity="0.07"
+         stroke="${PLAN_INK.camera}" stroke-width="1.1" stroke-dasharray="5 4"/>`;
+    const axis = planDestination(cam.lat, cam.lon, cam.bearing, coneLen);
+    cone +=
+      `<line x1="${sx(cam)}" y1="${sy(cam)}" x2="${sx(axis)}" y2="${sy(axis)}"
+         stroke="${PLAN_INK.camera}" stroke-width="1" stroke-dasharray="2 5" opacity="0.8"/>`;
+    coneLabel = `view ${fmtDeg(cam.bearing)} · ${Math.round(fov)}° FOV`;
+  }
+  if (cam && cam.uncertainty_m) {
+    const rPx = Math.max(4, cam.uncertainty_m / mPerPx);
+    ring = `<circle cx="${sx(cam)}" cy="${sy(cam)}" r="${rPx.toFixed(1)}" fill="none"
+              stroke="${PLAN_INK.camera}" stroke-width="1.2" stroke-dasharray="3 4" opacity="0.9"/>`;
+  }
+
+  /* --- control points --- */
+  const markers = anchors.map((a, i) => {
+    const x = sx(a), y = sy(a);
+    // An X in a ring: reads as a surveyed point rather than a map pin, and stays
+    // legible against busy imagery.
+    return `<g>
+      <circle cx="${x}" cy="${y}" r="9" fill="none" stroke="#04070c" stroke-width="3.5" opacity="0.6"/>
+      <circle cx="${x}" cy="${y}" r="9" fill="none" stroke="${PLAN_INK.anchor}" stroke-width="1.6"/>
+      <path d="M ${x - 5.5} ${y - 5.5} L ${x + 5.5} ${y + 5.5} M ${x + 5.5} ${y - 5.5} L ${x - 5.5} ${y + 5.5}"
+        stroke="${PLAN_INK.anchor}" stroke-width="1.8"/>
+      <text x="${x}" y="${y - 13}" text-anchor="middle" font-size="14.2" font-weight="700"
+        fill="${PLAN_INK.anchor}" ${HALO}>${i + 1}</text>
+    </g>`;
+  }).join("");
+
+  let camMarker = "";
+  if (cam) {
+    const x = sx(cam), y = sy(cam);
+    camMarker = `<g>
+      <circle cx="${x}" cy="${y}" r="11" fill="none" stroke="#04070c" stroke-width="3.5" opacity="0.6"/>
+      <circle cx="${x}" cy="${y}" r="11" fill="none" stroke="${PLAN_INK.camera}" stroke-width="1.6"/>
+      <circle cx="${x}" cy="${y}" r="4" fill="${PLAN_INK.camera}" stroke="#04070c" stroke-width="1.2"/>
+      <line x1="${x - 15}" y1="${y}" x2="${x - 11}" y2="${y}" stroke="${PLAN_INK.camera}" stroke-width="1.6"/>
+      <line x1="${x + 11}" y1="${y}" x2="${x + 15}" y2="${y}" stroke="${PLAN_INK.camera}" stroke-width="1.6"/>
+      <line x1="${x}" y1="${y - 15}" x2="${x}" y2="${y - 11}" stroke="${PLAN_INK.camera}" stroke-width="1.6"/>
+      <line x1="${x}" y1="${y + 11}" x2="${x}" y2="${y + 15}" stroke="${PLAN_INK.camera}" stroke-width="1.6"/>
+    </g>`;
+  }
+
+  /*
+   * Name labels with leader lines, hung off the side of the marker that faces
+   * into the frame so they don't run off the edge, and stepped vertically so
+   * two nearby anchors don't stack their text on top of each other.
+   */
+  let camDir = null;
+  if (cam && anchors.length) {
+    let ux = 0, uy = 0;
+    for (const a of anchors) {
+      const dx = sx(a) - sx(cam), dy = sy(a) - sy(cam), m = Math.hypot(dx, dy) || 1;
+      ux += dx / m; uy += dy / m;
+    }
+    const m = Math.hypot(ux, uy) || 1;
+    camDir = { x: -ux / m, y: -uy / m };
+  }
+
+  const labelled = [...anchors.map((a, i) => ({ ...a, n: `${i + 1}. ${a.name}`, ink: PLAN_INK.anchor })),
+                    ...(cam ? [{ ...cam, n: "Camera station", ink: PLAN_INK.camera, dir: camDir }] : [])];
+  const labels = labelled.map((p, i) => {
+    const x = sx(p), y = sy(p);
+    // Anchors step their labels vertically so two near neighbours don't stack.
+    let dx = p.dir ? p.dir.x * 22 : (x < PLAN_W / 2 ? 16 : -16);
+    const dy = p.dir ? p.dir.y * 22 : ((i % 3) - 1) * 15 - 2;
+    const wide = p.n.length * 7.4;            // ~14px type, close enough to flip on
+    if (dx >= 0 && x + dx + 6 + wide > PLAN_W - 6) dx = -Math.abs(dx);
+    else if (dx < 0 && x + dx - 6 - wide < 6) dx = Math.abs(dx);
+    const right = dx >= 0;
+    const len = Math.hypot(dx, dy) || 1;
+    const tx = x + dx + (right ? 6 : -6), ty = y + dy;
+    return `<g>
+      <path d="M ${(x + dx / len * 11).toFixed(1)} ${(y + dy / len * 11).toFixed(1)} L ${x + dx} ${y + dy} L ${tx} ${ty}"
+        fill="none" stroke="${p.ink}" stroke-width="1" opacity="0.85"/>
+      <text x="${tx}" y="${ty + 4}" text-anchor="${right ? "start" : "end"}" font-size="14.2"
+        font-weight="600" fill="#ffffff" ${HALO}>${escapeHtml(p.n)}</text>
+    </g>`;
+  }).join("");
+
+  /* --- map margin: graticule, north arrow, scale bar, attribution --- */
+  const gratX = [0.25, 0.5, 0.75].map(f => {
+    const px = PLAN_W * f;
+    return `<line x1="${px}" y1="0" x2="${px}" y2="${PLAN_H}" stroke="#ffffff" stroke-width="0.5" opacity="0.18"/>
+            <text x="${px + 3}" y="${38}" font-size="11.2" fill="${PLAN_INK.margin}" opacity="0.85" ${HALO}
+              >${fmtLon(worldXToLon(x0 + px / k, z))}</text>`;
+  }).join("");
+  const gratY = [0.25, 0.5, 0.75].map(f => {
+    const py = PLAN_H * f;
+    return `<line x1="0" y1="${py}" x2="${PLAN_W}" y2="${py}" stroke="#ffffff" stroke-width="0.5" opacity="0.18"/>
+            <text x="4" y="${py - 4}" font-size="11.2" fill="${PLAN_INK.margin}" opacity="0.85" ${HALO}
+              >${fmtLat(worldYToLat(y0 + py / k, z))}</text>`;
+  }).join("");
+
+  // Scale bar: a round number of metres closest to a quarter of the frame.
+  const target = PLAN_W * 0.25 * mPerPx;
+  const nice = [5, 10, 20, 25, 50, 100, 200, 250, 500, 1000, 2000, 5000]
+    .reduce((b, v) => Math.abs(v - target) < Math.abs(b - target) ? v : b, 5);
+  const barPx = nice / mPerPx;
+
+  const attribution = layer === "satellite"
+    ? "Imagery: Esri, Maxar, Earthstar Geographics"
+    : "© OpenStreetMap contributors";
 
   const el = document.createElement("div");
   el.className = "plan-wrap";
   el.innerHTML = `
-    <div class="visual-title">📐 Plan view — how the position was fixed</div>
-    <svg class="plan-svg" viewBox="0 0 ${S} ${S}" role="img" aria-label="Aerial plan of anchors and camera position">
-      <rect width="${S}" height="${S}" fill="#0b0f14"/>
-      ${[1,2,3,4].map(i=>`<line x1="${i*S/5}" y1="0" x2="${i*S/5}" y2="${S}" stroke="#1c2432" stroke-width="0.5"/>
-                          <line x1="0" y1="${i*S/5}" x2="${S}" y2="${i*S/5}" stroke="#1c2432" stroke-width="0.5"/>`).join("")}
-      ${cone}${links}${rings}
-      ${xy.map(p => p.kind === "camera"
-        ? `<circle cx="${px(p)}" cy="${py(p)}" r="5" fill="#4fd1c5" stroke="#0b0f14" stroke-width="1.5"/>`
-        : `<rect x="${px(p) - 4}" y="${py(p) - 4}" width="8" height="8" fill="#f5a524" stroke="#0b0f14" stroke-width="1.5"/>`
-      ).join("")}
-      ${xy.map(p => `<text x="${px(p) + 8}" y="${py(p) + 3.5}" font-size="9" fill="#e7edf5">${escapeHtml(p.name)}</text>`).join("")}
-      <g transform="translate(14,14)">
-        <line x1="0" y1="16" x2="0" y2="0" stroke="#9aa8bb" stroke-width="1.5"/>
-        <polygon points="0,-3 -3.2,3 3.2,3" fill="#9aa8bb"/>
-        <text x="6" y="4" font-size="9" fill="#9aa8bb">N</text>
+    <div class="visual-title">🛰️ Plan view — how the position was fixed
+      <button type="button" class="plan-zoom" aria-pressed="false">⤢ Enlarge</button>
+    </div>
+    <div class="plan-scroll">
+    <svg class="plan-svg" viewBox="0 0 ${PLAN_W} ${PLAN_H}" role="img"
+      aria-label="Aerial plan view of the located features and the derived camera position">
+      <rect width="${PLAN_W}" height="${PLAN_H}" fill="#0b0f14"/>
+      ${[1,2,3,4,5,6,7].map(i => `
+        <line x1="${i*PLAN_W/8}" y1="0" x2="${i*PLAN_W/8}" y2="${PLAN_H}" stroke="#1c2432" stroke-width="0.5"/>
+        <line x1="0" y1="${i*PLAN_H/8}" x2="${PLAN_W}" y2="${i*PLAN_H/8}" stroke="#1c2432" stroke-width="0.5"/>`).join("")}
+      <g class="plan-tiles">${tiles}</g>
+      <g class="plan-vectors"></g>
+      ${gratX}${gratY}
+      ${cone}${sightlines}${ring}
+      ${markers}${camMarker}
+      ${sightLabels}${labels}
+      <g transform="translate(${PLAN_W - 34},22)">
+        <line x1="0" y1="18" x2="0" y2="-2" stroke="#ffffff" stroke-width="2" ${HALO}/>
+        <polygon points="0,-8 -4.5,0 4.5,0" fill="#ffffff" ${HALO}/>
+        <text x="0" y="31" font-size="13" font-weight="700" text-anchor="middle" fill="#ffffff" ${HALO}>N</text>
       </g>
-      <g transform="translate(14,${S - 18})">
-        <line x1="0" y1="0" x2="${nice * scale}" y2="0" stroke="#9aa8bb" stroke-width="1.5"/>
-        <line x1="0" y1="-3" x2="0" y2="3" stroke="#9aa8bb" stroke-width="1.5"/>
-        <line x1="${nice * scale}" y1="-3" x2="${nice * scale}" y2="3" stroke="#9aa8bb" stroke-width="1.5"/>
-        <text x="${nice * scale / 2}" y="-6" font-size="9" fill="#9aa8bb" text-anchor="middle">${nice} m</text>
+      <g transform="translate(14,${PLAN_H - 22})">
+        <line x1="0" y1="0" x2="${barPx.toFixed(1)}" y2="0" stroke="#ffffff" stroke-width="2.5" ${HALO}/>
+        <line x1="0" y1="-4" x2="0" y2="4" stroke="#ffffff" stroke-width="2.5" ${HALO}/>
+        <line x1="${barPx.toFixed(1)}" y1="-4" x2="${barPx.toFixed(1)}" y2="4" stroke="#ffffff" stroke-width="2.5" ${HALO}/>
+        <text x="${(barPx / 2).toFixed(1)}" y="-7" font-size="13" font-weight="600" text-anchor="middle"
+          fill="#ffffff" ${HALO}>${nice >= 1000 ? `${nice / 1000} km` : `${nice} m`}</text>
       </g>
+      <text x="14" y="20" font-size="12.4" font-weight="600" fill="${PLAN_INK.margin}" ${HALO}
+        >WGS 84 / Web Mercator · z${z} · ${mPerPx.toFixed(2)} m per pixel</text>
+      <text class="plan-attrib" x="${PLAN_W - 8}" y="${PLAN_H - 7}" font-size="11.2" text-anchor="end"
+        fill="${PLAN_INK.margin}" opacity="0.8" ${HALO}>${escapeHtml(attribution)}</text>
     </svg>
+    </div>
     <div class="plan-legend">
-      <span><span class="plan-key plan-key-anchor"></span>located feature</span>
-      ${camera ? `<span><span class="plan-key plan-key-cam"></span>camera${camera.uncertainty_m ? ` ±${camera.uncertainty_m}m` : ""}</span>` : ""}
-      ${camera && camera.bearing != null ? `<span>view ${Math.round(camera.bearing)}°</span>` : ""}
+      <span><span class="plan-key plan-key-anchor"></span>control point (located feature)</span>
+      ${cam ? `<span><span class="plan-key plan-key-cam"></span>camera station${cam.uncertainty_m ? ` ±${Math.round(cam.uncertainty_m)} m` : ""}</span>` : ""}
+      ${coneLabel ? `<span><span class="plan-key plan-key-cone"></span>${coneLabel}</span>` : ""}
+      <span><span class="plan-key plan-key-bldg"></span>OSM building</span>
+      <span><span class="plan-key plan-key-road"></span>OSM way</span>
     </div>
     ${caption ? `<div class="plan-caption">${escapeHtml(caption)}</div>` : ""}
-    ${camera ? `<div class="plan-coords">Camera: ${camera.lat.toFixed(6)}, ${camera.lon.toFixed(6)}</div>` : ""}`;
+    ${cam ? `<div class="plan-coords">Camera station: ${cam.lat.toFixed(6)}, ${cam.lon.toFixed(6)}${
+        typeof cam.bearing === "number" ? ` · looking ${fmtDeg(cam.bearing)}` : ""}</div>`
+      : `<div class="plan-coords plan-coords-warn">No camera station supplied — the plan shows located features only.</div>`}`;
+
+  hydratePlan(el, { bounds, z, k, x0, y0, mPerPx, tilesAvailable });
   return el;
+}
+
+/**
+ * Everything that can't be drawn synchronously: notice when the imagery fails
+ * to load, and trace the OSM footprints over it once Overpass answers.
+ */
+function hydratePlan(el, { bounds, z, k, x0, y0, mPerPx, tilesAvailable }) {
+  const svg = el.querySelector(".plan-svg");
+
+  el.querySelector(".plan-zoom").addEventListener("click", () =>
+    el.classList.contains("plan-big") ? closePlanLightbox(el) : openPlanLightbox(el));
+
+  if (tilesAvailable) {
+    const imgs = [...el.querySelectorAll(".plan-tile")];
+    let failed = 0;
+    imgs.forEach(img => img.addEventListener("error", () => {
+      img.remove();
+      // One missing tile at the edge of coverage is normal; all of them means the
+      // basemap is unreachable, and the user should be told what they're looking at.
+      if (++failed === imgs.length) notePlan(el, "Aerial imagery unavailable — showing the survey geometry only.");
+    }));
+  } else {
+    notePlan(el, "Aerial imagery needs the server (npm start) — showing the survey geometry only.");
+  }
+
+  const groundWidth = PLAN_W * mPerPx;
+  if (typeof Proxy?.lookup !== "function" || !Proxy.available || groundWidth > 1500) return;
+
+  const bbox = `${bounds.south.toFixed(6)},${bounds.west.toFixed(6)},${bounds.north.toFixed(6)},${bounds.east.toFixed(6)}`;
+  const query =
+    `[out:json][timeout:25];(way["building"](${bbox});way["highway"](${bbox}););out geom 600;`;
+
+  Proxy.lookup("overpass", { query }).then(data => {
+    const ways = (data && data.elements || []).filter(e => Array.isArray(e.geometry) && e.geometry.length > 1);
+    if (!ways.length) return;
+    const g = svg.querySelector(".plan-vectors");
+    if (!g) return;
+
+    const pt = n => `${((lonToWorldX(n.lon, z) - x0) * k).toFixed(1)},${((latToWorldY(n.lat, z) - y0) * k).toFixed(1)}`;
+    g.innerHTML = ways.map(w => {
+      const pts = w.geometry.filter(n => n && typeof n.lat === "number").map(pt).join(" ");
+      if (!pts) return "";
+      return w.tags && w.tags.building
+        ? `<polygon points="${pts}" fill="${PLAN_INK.building}" fill-opacity="0.10"
+             stroke="${PLAN_INK.building}" stroke-width="1" stroke-opacity="0.9"/>`
+        : `<polyline points="${pts}" fill="none" stroke="${PLAN_INK.road}"
+             stroke-width="1.2" stroke-opacity="0.5" stroke-linejoin="round"/>`;
+    }).join("");
+  }).catch(() => { /* vectors are a bonus; the imagery and geometry stand alone */ });
+}
+
+/*
+ * The chat column is ~430px wide; a 680-unit map scaled into it is a thumbnail.
+ * Enlarging moves the diagram bodily out to a full-viewport overlay rather than
+ * cloning it — the tiles stay loaded and the Overpass overlay keeps landing in
+ * the same node — and a placeholder holds its place in the trace until it is
+ * put back.
+ */
+function openPlanLightbox(el) {
+  const holder = document.createElement("div");
+  el.after(holder);
+  const box = document.createElement("div");
+  box.className = "plan-lightbox";
+  box.appendChild(el);
+  document.body.appendChild(box);
+  el.classList.add("plan-big");
+
+  const esc = e => { if (e.key === "Escape") closePlanLightbox(el); };
+  box.addEventListener("click", e => { if (e.target === box) closePlanLightbox(el); });
+  document.addEventListener("keydown", esc);
+  el._plan = { holder, box, esc };
+
+  const btn = el.querySelector(".plan-zoom");
+  btn.textContent = "⤡ Close";
+  btn.setAttribute("aria-pressed", "true");
+}
+
+function closePlanLightbox(el) {
+  if (!el._plan) return;
+  const { holder, box, esc } = el._plan;
+  holder.replaceWith(el);
+  box.remove();
+  document.removeEventListener("keydown", esc);
+  el.classList.remove("plan-big");
+  el._plan = null;
+
+  const btn = el.querySelector(".plan-zoom");
+  btn.textContent = "⤢ Enlarge";
+  btn.setAttribute("aria-pressed", "false");
+}
+
+function notePlan(el, text) {
+  const note = document.createElement("div");
+  note.className = "plan-note";
+  note.textContent = text;
+  el.querySelector(".plan-legend").before(note);
 }
 
 function truncate(s, n) {
