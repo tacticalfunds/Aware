@@ -99,6 +99,33 @@ const SOURCES = {
   opensky: {
     build: p => `https://opensky-network.org/api/states/all?icao24=${enc(p.icao24)}`
   },
+  rdap_ip: {
+    // Who the IP block is registered to — the netblock owner, not just the host.
+    build: p => `https://rdap.org/ip/${enc(p.ip)}`
+  },
+  bgpview_ip: {
+    build: p => `https://api.bgpview.io/ip/${enc(p.ip)}`
+  },
+  bgpview_asn: {
+    build: p => `https://api.bgpview.io/asn/${enc(String(p.asn).replace(/^AS/i, ""))}`
+  },
+  urlhaus: {
+    // abuse.ch malware-URL database; host lookup needs no key.
+    build: p => `https://urlhaus-api.abuse.ch/v1/host/`,
+    method: "POST",
+    body: p => `host=${enc(p.host)}`,
+    contentType: "application/x-www-form-urlencoded"
+  },
+  bluesky_profile: {
+    build: p => `https://public.api.bsky.app/xrpc/app.bsky.actor.getProfile?actor=${enc(p.handle)}`
+  },
+  overpass: {
+    // Free-form OSM query — the workhorse for "what is near these coordinates".
+    build: () => `https://overpass-api.de/api/interpreter`,
+    method: "POST",
+    body: p => `data=${enc(p.query)}`,
+    contentType: "application/x-www-form-urlencoded"
+  },
 
   // --- credentialed; key comes from the server env, never the browser ---
   shodan: {
@@ -170,10 +197,17 @@ async function runLookup(name, params) {
     headers = { ...headers, ...a.headers };
   }
 
+  const init = { headers, redirect: "follow" };
+  if (src.method === "POST") {
+    init.method = "POST";
+    init.body = src.body(params || {});
+    init.headers = { ...headers, "Content-Type": src.contentType || "application/json" };
+  }
+
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 15000);
   try {
-    const res = await fetch(url, { headers, signal: controller.signal, redirect: "follow" });
+    const res = await fetch(url, { ...init, signal: controller.signal });
     const text = await res.text();
     let body;
     try { body = JSON.parse(text); } catch { body = { raw: text.slice(0, 20000) }; }
@@ -186,6 +220,101 @@ async function runLookup(name, params) {
   } finally {
     clearTimeout(timer);
   }
+}
+
+/* ------------------------------------------------------------------ *
+ * Username enumeration (WhatsMyName)
+ *
+ * data/wmn-data.json gives, per site, a URL template and how to tell a hit
+ * from a miss. This is what Sherlock/Maigret do; doing it server-side is the
+ * only way it can work at all, since the browser can't read cross-origin
+ * responses. Requests are capped and throttled — this fans out to hundreds of
+ * third-party sites and shouldn't hammer them.
+ * ------------------------------------------------------------------ */
+
+let WMN = null;
+function loadWmn() {
+  if (WMN) return WMN;
+  try {
+    WMN = JSON.parse(fs.readFileSync(path.join(ROOT, "data", "wmn-data.json"), "utf8"));
+  } catch {
+    WMN = { sites: [] };
+  }
+  return WMN;
+}
+
+const USERNAME_VALID = /^[A-Za-z0-9._-]{2,64}$/;
+
+async function checkSite(site, username) {
+  const url = site.uri_check.replace(/\{account\}/g, encodeURIComponent(username));
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 7000);
+  try {
+    const res = await fetch(url, {
+      headers: {
+        // Sites gate on a browser-shaped UA; without one many 403 and every
+        // result becomes a false negative.
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0 Safari/537.36",
+        Accept: "text/html,application/xhtml+xml,application/json;q=0.9,*/*;q=0.8"
+      },
+      redirect: "follow",
+      signal: controller.signal
+    });
+
+    // A hit needs the expected code AND, when specified, the expected string.
+    if (res.status !== site.e_code) return null;
+    if (site.e_string) {
+      const body = await res.text();
+      if (!body.includes(site.e_string)) return null;
+      if (site.m_string && body.includes(site.m_string)) return null;
+    }
+    return { name: site.name, url, category: site.cat };
+  } catch {
+    return null; // timeout / DNS / TLS — indistinguishable from "no account"
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function enumerateUsername(username, { categories, limit } = {}) {
+  if (!USERNAME_VALID.test(username || "")) {
+    throw Object.assign(new Error("Username must be 2-64 chars of A-Z a-z 0-9 . _ -"), { status: 400 });
+  }
+  const data = loadWmn();
+  let sites = data.sites || [];
+
+  // Sites behind CAPTCHA/Cloudflare answer with a challenge page, which reads
+  // as "not found" — reporting that as a real negative would be misleading.
+  sites = sites.filter(s => !(s.protection || []).some(p => /captcha|cloudflare/i.test(p)));
+  if (categories?.length) {
+    const want = new Set(categories.map(c => c.toLowerCase()));
+    sites = sites.filter(s => want.has((s.cat || "").toLowerCase()));
+  }
+  // Skip adult sites unless explicitly requested.
+  if (!categories?.length) sites = sites.filter(s => !/nsfw/i.test(s.cat || ""));
+
+  const cap = Math.min(Number(limit) || 90, 250);
+  const checked = sites.slice(0, cap);
+
+  const found = [];
+  const CONCURRENCY = 12;
+  let cursor = 0;
+  await Promise.all(
+    Array.from({ length: Math.min(CONCURRENCY, checked.length) }, async () => {
+      while (cursor < checked.length) {
+        const site = checked[cursor++];
+        const hit = await checkSite(site, username);
+        if (hit) found.push(hit);
+      }
+    })
+  );
+
+  return {
+    username,
+    checked: checked.length,
+    available_sites: sites.length,
+    found: found.sort((a, b) => a.name.localeCompare(b.name))
+  };
 }
 
 /* ------------------------------------------------------------------ *
@@ -231,7 +360,32 @@ const server = http.createServer(async (req, res) => {
 
   if (pathname === "/api/sources") {
     res.writeHead(200, { "Content-Type": "application/json" });
-    res.end(JSON.stringify({ proxy: true, sources: availableSources() }));
+    res.end(JSON.stringify({
+      proxy: true,
+      sources: availableSources(),
+      username_sites: (loadWmn().sites || []).length
+    }));
+    return;
+  }
+
+  if (pathname === "/api/username") {
+    if (req.method !== "POST") {
+      res.writeHead(405, { "Content-Type": "application/json" }).end(JSON.stringify({ error: "POST only" }));
+      return;
+    }
+    let raw = "";
+    req.on("data", c => { raw += c; if (raw.length > 8192) req.destroy(); });
+    req.on("end", async () => {
+      try {
+        const { username, categories, limit } = JSON.parse(raw || "{}");
+        const out = await enumerateUsername(username, { categories, limit });
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify(out));
+      } catch (err) {
+        res.writeHead(err.status || 500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+    });
     return;
   }
 

@@ -214,6 +214,84 @@ const AGENT_TOOLS = [
     }
   },
   {
+    name: "username_enumeration",
+    description:
+      "Checks whether a username exists across hundreds of sites (the WhatsMyName dataset — the same technique as Sherlock/Maigret), running server-side. " +
+      "This is usually the highest-yield pivot from a handle: each hit is another profile to read. " +
+      "Optionally narrow by category (social, coding, gaming, finance, dating, blog, tech, video, music, art, shopping, news, business, political, hobby, images, health, archived, misc).",
+    input_schema: {
+      type: "object",
+      properties: {
+        username: { type: "string" },
+        categories: { type: "array", items: { type: "string" }, description: "Optional category filter." },
+        limit: { type: "integer", description: "How many sites to check (default 90, max 250)." }
+      },
+      required: ["username"]
+    }
+  },
+  {
+    name: "sun_position",
+    description:
+      "Sun altitude and compass azimuth for a location, date and time — plus sunrise/sunset/golden hour. " +
+      "Use to verify when an outdoor photo was taken: shadows fall in the OPPOSITE direction to the sun's azimuth, and shadow length relative to object height is 1/tan(altitude). " +
+      "Runs offline, no network.",
+    input_schema: {
+      type: "object",
+      properties: {
+        lat: { type: "number" },
+        lon: { type: "number" },
+        datetime: { type: "string", description: "ISO 8601, e.g. 2026-06-21T16:00:00Z. Omit for the day's sun times only." }
+      },
+      required: ["lat", "lon"]
+    }
+  },
+  {
+    name: "network_ownership",
+    description:
+      "Who an IP address actually belongs to: the registered netblock owner (RDAP), plus ASN, prefix and the hosting/transit provider (BGPView). " +
+      "Goes beyond ip_info's geolocation — use it to establish whether a host sits on a corporate network, a hosting provider or a residential ISP.",
+    input_schema: {
+      type: "object",
+      properties: {
+        ip: { type: "string" },
+        asn: { type: "string", description: "Look up an AS number directly instead, e.g. AS15169." }
+      }
+    }
+  },
+  {
+    name: "malware_url_check",
+    description: "Checks a hostname against abuse.ch URLhaus for known malware-distribution or phishing URLs. Free, no key. Use on any domain that looks suspicious.",
+    input_schema: {
+      type: "object",
+      properties: { host: { type: "string", description: "Hostname, no scheme." } },
+      required: ["host"]
+    }
+  },
+  {
+    name: "bluesky_lookup",
+    description: "Public Bluesky profile for a handle (display name, bio, follower/post counts, join-adjacent data). Free, no auth.",
+    input_schema: {
+      type: "object",
+      properties: { handle: { type: "string", description: "e.g. alice.bsky.social" } },
+      required: ["handle"]
+    }
+  },
+  {
+    name: "osm_nearby",
+    description:
+      "Queries OpenStreetMap via Overpass for features near coordinates — useful when geolocating a photo to confirm what should be visible at a candidate spot (named buildings, shops, fuel stations, towers, bridges).",
+    input_schema: {
+      type: "object",
+      properties: {
+        lat: { type: "number" },
+        lon: { type: "number" },
+        radius: { type: "integer", description: "Metres, default 300." },
+        feature: { type: "string", description: "OSM key or key=value, e.g. 'amenity', 'shop=supermarket', 'man_made=tower'. Default: anything named." }
+      },
+      required: ["lat", "lon"]
+    }
+  },
+  {
     name: "request_manual_lookup",
     description:
       "Hand a lookup to the user for a tool you cannot call yourself — which is most of the 3,400-tool directory (sites with no API, or that need a login, or block automated access). " +
@@ -391,6 +469,130 @@ async function executeAgentTool(name, input, liveKeys, ctx = {}) {
         v.Manufacturer && `Manufacturer: ${v.Manufacturer}`
       ].filter(Boolean);
       return f.length ? f.join("\n") : "VIN decoded but no fields populated — check the VIN is 17 characters.";
+    }
+    case "username_enumeration": {
+      const res = await fetch("/api/username", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ username: input.username, categories: input.categories, limit: input.limit })
+      });
+      const d = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(d.error || `Enumeration failed (${res.status})`);
+      if (!d.found.length) {
+        return `Checked ${d.checked} sites for "${d.username}" — no accounts found. Note this is not proof of absence: sites behind CAPTCHA/Cloudflare are skipped, and timeouts read as misses.`;
+      }
+      return `Found "${d.username}" on ${d.found.length} of ${d.checked} sites checked:\n` +
+        d.found.map(f => `- ${f.name} (${f.category}): ${f.url}`).join("\n") +
+        `\n\nEach is a profile worth reading. Sites behind CAPTCHA/Cloudflare were skipped, so this is a floor, not a ceiling.`;
+    }
+    case "sun_position": {
+      const { lat, lon } = input;
+      const day = input.datetime ? new Date(input.datetime) : new Date();
+      if (isNaN(day)) throw new Error("Unparseable datetime — use ISO 8601 like 2026-06-21T16:00:00Z");
+      const times = SunCalc.getTimes(day, lat, lon);
+      const fmt = d => (d instanceof Date && !isNaN(d) ? d.toISOString().replace(".000Z", "Z") : "n/a");
+      const lines = [
+        `Location: ${lat}, ${lon}`,
+        `Sunrise: ${fmt(times.sunrise)}   Solar noon: ${fmt(times.solarNoon)}   Sunset: ${fmt(times.sunset)}`,
+        `Golden hour (evening) starts: ${fmt(times.goldenHour)}`
+      ];
+      if (input.datetime) {
+        // suncalc v2 returns DEGREES, azimuth measured from north — verified
+        // against sunrise/noon/sunset. Do NOT apply a radian conversion here.
+        const pos = SunCalc.getPosition(day, lat, lon);
+        const alt = pos.altitude, az = pos.azimuth;
+        const compass = ["N","NNE","NE","ENE","E","ESE","SE","SSE","S","SSW","SW","WSW","W","WNW","NW","NNW"][Math.round(((az % 360) + 360) % 360 / 22.5) % 16];
+        lines.push(
+          `\nAt ${fmt(day)}:`,
+          `  Sun altitude: ${alt.toFixed(1)}° ${alt < 0 ? "(below horizon — dark)" : ""}`,
+          `  Sun azimuth: ${az.toFixed(1)}° from north (${compass})`
+        );
+        if (alt > 0.5) {
+          const shadowAz = (az + 180) % 360;
+          const shadowCompass = ["N","NNE","NE","ENE","E","ESE","SE","SSE","S","SSW","SW","WSW","W","WNW","NW","NNW"][Math.round(shadowAz / 22.5) % 16];
+          lines.push(
+            `  Shadows point: ${shadowAz.toFixed(1)}° (${shadowCompass})`,
+            `  Shadow length: ${(1 / Math.tan(alt * Math.PI / 180)).toFixed(2)}x object height`
+          );
+        }
+      }
+      return lines.join("\n");
+    }
+    case "network_ownership": {
+      if (input.asn) {
+        const a = await Proxy.lookup("bgpview_asn", { asn: input.asn });
+        const d = a?.data;
+        if (!d) return "No ASN data returned.";
+        return [
+          `AS${d.asn} — ${d.name || ""} ${d.description_short ? `(${d.description_short})` : ""}`,
+          d.country_code && `Country: ${d.country_code}`,
+          d.website && `Website: ${d.website}`,
+          d.email_contacts?.length && `Contacts: ${d.email_contacts.join(", ")}`
+        ].filter(Boolean).join("\n");
+      }
+      const [rdap, bgp] = await Promise.all([
+        Proxy.lookup("rdap_ip", { ip: input.ip }).catch(() => null),
+        Proxy.lookup("bgpview_ip", { ip: input.ip }).catch(() => null)
+      ]);
+      const out = [];
+      if (rdap) {
+        const org = (rdap.entities || []).map(e => e.vcardArray?.[1]?.find(f => f[0] === "fn")?.[3]).filter(Boolean);
+        out.push([
+          `Netblock: ${rdap.startAddress}–${rdap.endAddress}${rdap.name ? ` (${rdap.name})` : ""}`,
+          org.length && `Registered to: ${org.join(", ")}`,
+          rdap.country && `Country: ${rdap.country}`,
+          (rdap.status || []).length && `Status: ${rdap.status.join(", ")}`
+        ].filter(Boolean).join("\n"));
+      }
+      const b = bgp?.data;
+      if (b) {
+        const pfx = b.prefixes?.[0];
+        out.push([
+          pfx?.asn && `ASN: AS${pfx.asn.asn} — ${pfx.asn.name || ""} ${pfx.asn.description || ""}`.trim(),
+          pfx?.prefix && `Announced prefix: ${pfx.prefix}`,
+          b.ptr_record && `Reverse DNS: ${b.ptr_record}`,
+          pfx?.country_code && `Prefix country: ${pfx.country_code}`
+        ].filter(Boolean).join("\n"));
+      }
+      return out.filter(Boolean).join("\n\n") || "No ownership data returned.";
+    }
+    case "malware_url_check": {
+      const d = await Proxy.lookup("urlhaus", { host: input.host });
+      if (d.query_status === "no_results") return `${input.host}: no entries in URLhaus. Not evidence of safety — only that abuse.ch hasn't recorded it.`;
+      if (d.query_status !== "ok") return `URLhaus returned: ${d.query_status}`;
+      const urls = d.urls || [];
+      return [
+        `${input.host} IS listed in URLhaus.`,
+        d.firstseen && `First seen: ${d.firstseen}`,
+        `${d.url_count || urls.length} malicious URL(s) recorded.`,
+        urls.slice(0, 5).map(u => `- ${u.url} [${u.url_status}] ${(u.tags || []).join(",")}`).join("\n")
+      ].filter(Boolean).join("\n");
+    }
+    case "bluesky_lookup": {
+      const d = await Proxy.lookup("bluesky_profile", { handle: input.handle });
+      return [
+        `@${d.handle}${d.displayName ? ` — ${d.displayName}` : ""}`,
+        d.description && `Bio: ${d.description}`,
+        `Followers: ${d.followersCount} · Following: ${d.followsCount} · Posts: ${d.postsCount}`,
+        d.did && `DID: ${d.did}`,
+        d.createdAt && `Created: ${String(d.createdAt).slice(0, 10)}`
+      ].filter(Boolean).join("\n");
+    }
+    case "osm_nearby": {
+      const r = Number(input.radius) || 300;
+      const f = input.feature || "";
+      const sel = f.includes("=")
+        ? `["${f.split("=")[0]}"="${f.split("=")[1]}"]`
+        : f ? `["${f}"]` : `["name"]`;
+      const q = `[out:json][timeout:20];(node${sel}(around:${r},${input.lat},${input.lon});way${sel}(around:${r},${input.lat},${input.lon}););out center 40;`;
+      const d = await Proxy.lookup("overpass", { query: q });
+      const els = d.elements || [];
+      if (!els.length) return `No matching OSM features within ${r}m.`;
+      return `${els.length} feature(s) within ${r}m:\n` + els.slice(0, 25).map(e => {
+        const t = e.tags || {};
+        const kind = t.amenity || t.shop || t.building || t.man_made || t.highway || e.type;
+        return `- ${t.name || "(unnamed)"} [${kind}]`;
+      }).join("\n");
     }
     case "request_manual_lookup": {
       if (!ctx.onManualRequest) {

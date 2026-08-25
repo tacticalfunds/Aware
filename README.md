@@ -102,11 +102,27 @@ Two mechanisms, because no single one covers the whole directory:
 
 **1. Server-side proxy — for anything with an API.** Most OSINT APIs send no CORS
 headers, so a browser physically cannot call them. `server.js` proxies a fixed list of
-sources, which unlocks registration data (RDAP), Wayback history, GitHub, Reddit,
-Wikipedia/HN, geocoding, the NHTSA VIN database and the keyed providers. It is **not**
-an open proxy: the client sends a source *name* and parameters, and the server builds
-the upstream URL itself from its own table — passing a raw URL through would be an SSRF
-hole. API keys can live in server env vars instead of every visitor's browser.
+34 sources. It is **not** an open proxy: the client sends a source *name* and
+parameters, and the server builds the upstream URL itself from its own table — passing
+a raw URL through would be an SSRF hole. API keys can live in server env vars instead
+of every visitor's browser.
+
+Two of the 26 agent tools deserve specific mention:
+
+- **`username_enumeration`** — checks a handle against hundreds of sites using the
+  [WhatsMyName](https://github.com/WebBreacher/WhatsMyName) dataset (`data/wmn-data.json`,
+  refresh with `tools/refresh-wmn.sh`), the same technique as Sherlock/Maigret. It only
+  works server-side, since the browser can't read cross-origin responses. Requests are
+  throttled (12 concurrent, 7s timeout, 90 sites by default) because this fans out to
+  hundreds of third parties. Sites behind CAPTCHA/Cloudflare are **skipped rather than
+  reported as misses** — their challenge page would otherwise read as "no account", and
+  a false negative is worse than a gap you know about. Results are a floor, not a ceiling.
+- **`sun_position`** — sun altitude/azimuth and shadow direction for a place and time,
+  computed offline. The workhorse for dating an outdoor photo: shadows fall opposite the
+  sun's azimuth, and shadow length is `1/tan(altitude)` × object height.
+  (Note for anyone editing this: suncalc v2 returns **degrees measured from north**, not
+  v1's radians-from-south — the `* 180/Math.PI` conversion in most tutorials produces
+  garbage here. Verified against sunrise-NE / noon-due-south / sunset-NW.)
 
 **2. Human-in-the-loop handoff — for everything else.** The great majority of the
 directory is sites with no API, or that need a login, or that block automation. For
