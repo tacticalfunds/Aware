@@ -83,11 +83,11 @@ the folder with any static file server (e.g. `python3 -m http.server`).
 
   Optionally set any of these as Railway environment variables to enable the
   credentialed sources for everyone using your deployment, without anyone pasting
-  keys into a browser: `SHODAN_KEY`, `VIRUSTOTAL_KEY`, `ABUSEIPDB_KEY`,
-  `ETHERSCAN_KEY`, `HIBP_KEY`, `VERIPHONE_KEY`, `IPQS_KEY`, `GITHUB_TOKEN`,
-  `MAPILLARY_TOKEN` (free — turns street-level imagery from a manual handoff into
-  something the agent looks at itself), `BRAVE_KEY` (free tier — a web search that
-  isn't rate-limited).
+  keys into a browser. **[KEYS.md](KEYS.md)** covers what each one is worth, in the
+  order they change what the agent can actually do — `BRAVE_KEY` and
+  `MAPILLARY_TOKEN` first, since without them web search is a scrape that gets
+  rate-limited and street-level imagery is a manual handoff. The server also names
+  the ones you have not set on every startup.
   `GET /api/sources` reports which are configured, along with the basemap layers
   available to the plan view.
 

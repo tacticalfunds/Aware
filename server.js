@@ -907,7 +907,31 @@ const server = http.createServer(async (req, res) => {
   serveStatic(req, res, pathname);
 });
 
+/*
+ * Named at startup because an unset optional key is invisible otherwise: the
+ * affected tool simply never runs, and the investigation reads as though the
+ * lookup found nothing. KEYS.md explains what each one is worth.
+ */
+const OPTIONAL_KEYS = [
+  ["BRAVE_KEY", "web search that isn't rate-limited (scraping DuckDuckGo/Mojeek instead)"],
+  ["MAPILLARY_TOKEN", "street-level imagery the agent reads itself (handing it to the user instead)"],
+  ["HIBP_KEY", "email breach lookups"],
+  ["SHODAN_KEY", "open ports and services for an IP"],
+  ["VIRUSTOTAL_KEY", "file, URL and domain reputation"],
+  ["ABUSEIPDB_KEY", "abuse reports against an IP"],
+  ["ETHERSCAN_KEY", "Ethereum wallet balances"],
+  ["VERIPHONE_KEY", "phone carrier and line type"],
+  ["IPQS_KEY", "phone fraud scoring"],
+  ["GITHUB_TOKEN", "GitHub code search"]
+];
+
 server.listen(PORT, () => {
   const configured = Object.entries(availableSources()).filter(([, v]) => v).length;
   console.log(`Aware listening on :${PORT} — ${configured}/${Object.keys(SOURCES).length} proxy sources available`);
+
+  const missing = OPTIONAL_KEYS.filter(([k]) => !process.env[k]);
+  if (missing.length) {
+    console.log(`\nOptional keys not set (${missing.length}) — see KEYS.md:`);
+    for (const [k, what] of missing) console.log(`  ${k.padEnd(17)} ${what}`);
+  }
 });

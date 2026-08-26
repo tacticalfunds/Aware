@@ -85,6 +85,7 @@ const SECTIONS = [
     id: "docs", title: "Project documentation",
     files: [
       ["README.md", "The repository's own README."],
+      ["KEYS.md", "Which optional API keys are worth setting and what each one unlocks."],
       [".gitignore", ""]
     ]
   }
