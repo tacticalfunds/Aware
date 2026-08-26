@@ -21,30 +21,45 @@
 const PROXY_TIMEOUT_MS = 35000;
 
 async function proxyFetch(path, body, what) {
-  let res;
-  try {
-    res = await fetch(path, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify(body),
-      signal: AbortSignal.timeout(PROXY_TIMEOUT_MS)
-    });
-  } catch (err) {
-    if (err.name === "TimeoutError" || err.name === "AbortError") {
-      throw new Error(
-        `${what} timed out after ${PROXY_TIMEOUT_MS / 1000}s — the server did not answer. ` +
-        `Treat this as "could not check", not as "found nothing", and try a different route.`
-      );
+  const deadline = Date.now() + PROXY_TIMEOUT_MS;
+  let netErr = null;
+
+  // Two passes at most, and only for a network-level failure: a wifi-to-cellular
+  // handover kills whatever is in flight but is over in a second or two, and
+  // losing a whole tool call to that is a waste. A timeout is not retried — the
+  // server has its own budget, so a slow answer will not become a fast one.
+  for (let attempt = 1; attempt <= 2; attempt++) {
+    const remaining = deadline - Date.now();
+    if (remaining < 2000) break;
+
+    if (attempt > 1) await new Promise(r => setTimeout(r, 1500));
+
+    try {
+      const res = await fetch(path, {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(deadline - Date.now())
+      });
+      const data = await res.json().catch(() => ({}));
+      return { res, data };
+    } catch (err) {
+      if (err.name === "TimeoutError" || err.name === "AbortError") {
+        throw new Error(
+          `${what} timed out after ${PROXY_TIMEOUT_MS / 1000}s — the server did not answer. ` +
+          `Treat this as "could not check", not as "found nothing", and try a different route.`
+        );
+      }
+      netErr = err;
     }
-    throw new Error(
-      `${what} could not reach the server (${err.message || "network error"}). ` +
-      `The lookup never ran, so this says nothing about whether the data exists — ` +
-      `retry once or use a different tool.`
-    );
   }
 
-  const data = await res.json().catch(() => ({}));
-  return { res, data };
+  throw new Error(
+    `${what} could not reach the server (${netErr?.message || "network error"}` +
+    `${navigator.onLine === false ? ", device reports offline" : ""}). ` +
+    `The lookup never ran, so this says nothing about whether the data exists — ` +
+    `try again in a moment or take a different route.`
+  );
 }
 
 const Proxy = {

@@ -156,9 +156,41 @@ function makeVisualWatch(hasImage) {
  * straight back, because retrying those only wastes time.
  */
 const CLAUDE_RETRY_STATUS = new Set([408, 409, 429, 500, 502, 503, 504, 529]);
-const CLAUDE_MAX_ATTEMPTS = 4;
+const CLAUDE_MAX_ATTEMPTS = 6;
 
 const wait = ms => new Promise(r => setTimeout(r, ms));
+
+/*
+ * Four attempts inside six seconds is not a retry policy for a phone. A handover
+ * between wifi and cellular, a lift, a tunnel — these take tens of seconds, and
+ * every attempt spent inside that window is wasted: the run gave up while the
+ * device was still offline, having asked six times in six seconds.
+ *
+ * So when the browser says it is offline, wait for it to say otherwise instead
+ * of burning an attempt. navigator.onLine is only a hint — it reports the link,
+ * not whether anything is reachable — which is why this only ever *adds* patience
+ * and never concludes anything on its own.
+ */
+const OFFLINE_WAIT_MS = 45000;
+
+function waitForOnline(onEvent) {
+  if (navigator.onLine !== false) return Promise.resolve(false);
+  onEvent({ type: "retry", text: "The device is offline — holding the investigation until the connection is back." });
+
+  return new Promise(resolve => {
+    let settled = false;
+    const done = wasOffline => {
+      if (settled) return;
+      settled = true;
+      window.removeEventListener("online", onOnline);
+      clearTimeout(timer);
+      resolve(wasOffline);
+    };
+    const onOnline = () => done(true);
+    const timer = setTimeout(() => done(true), OFFLINE_WAIT_MS);
+    window.addEventListener("online", onOnline);
+  });
+}
 
 /** Turns an HTTP failure into something a person can act on. */
 function claudeErrorText(status, detail) {
@@ -175,13 +207,20 @@ function claudeErrorText(status, detail) {
 
 async function callClaude(apiKey, body, onEvent) {
   let last = null;
+  let made = 0;   // requests actually sent, which is what the user is told about
 
   for (let attempt = 1; attempt <= CLAUDE_MAX_ATTEMPTS; attempt++) {
     if (attempt > 1) {
-      const delay = Math.min(8000, 700 * 2 ** (attempt - 2)) + Math.random() * 400;
-      onEvent({ type: "retry", text: `${last} — retrying in ${(delay / 1000).toFixed(1)}s (attempt ${attempt} of ${CLAUDE_MAX_ATTEMPTS})` });
+      // Being offline does not count against the budget — waiting it out is the
+      // point — but it must not rewind the count shown either.
+      if (await waitForOnline(onEvent)) attempt--;
+
+      const delay = Math.min(15000, 800 * 2 ** (attempt - 2)) + Math.random() * 400;
+      onEvent({ type: "retry", text:
+        `${last} — retrying in ${(delay / 1000).toFixed(1)}s (attempt ${made + 1} of ${CLAUDE_MAX_ATTEMPTS})` });
       await wait(delay);
     }
+    made++;
 
     let res;
     try {
@@ -196,8 +235,12 @@ async function callClaude(apiKey, body, onEvent) {
         body: JSON.stringify(body)
       });
     } catch (err) {
-      // fetch only rejects on network-level failure, so there is no status to read.
-      last = `Network error reaching the Claude API (${err.message || "connection failed"})`;
+      // fetch only rejects on network-level failure, so there is no status to
+      // read. Record what the browser thinks of the link — "Failed to fetch"
+      // while offline and "Failed to fetch" while online are different problems
+      // and were previously indistinguishable in the report.
+      last = `Network error reaching the Claude API (${err.message || "connection failed"}` +
+        `${navigator.onLine === false ? ", device reports offline" : ""})`;
       continue;
     }
 
@@ -214,8 +257,9 @@ async function callClaude(apiKey, body, onEvent) {
   }
 
   throw new Error(
-    `${last} — gave up after ${CLAUDE_MAX_ATTEMPTS} attempts. ` +
-    `The findings above are what the investigation reached; say "continue" to resume from there.`
+    `${last} — gave up after ${made} attempts over about a minute. ` +
+    `Everything found so far is kept: say "continue" and the investigation resumes from where it stopped, ` +
+    `it does not start again.`
   );
 }
 

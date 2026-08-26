@@ -570,7 +570,9 @@ function createTraceBubble() {
           break;
         case "tool_result":
           add(`<div class="trace-result ${ev.ok ? "ok" : "err"}">${ev.ok ? "✓" : "✗"} ` +
-            (ev.images ? `<span class="trace-imgs">🖼️ ${ev.images} photo${ev.images === 1 ? "" : "s"} shown to the model</span> ` : "") +
+            (ev.images?.length
+              ? `<span class="trace-imgs">🖼️ ${ev.images.length} photo${ev.images.length === 1 ? "" : "s"} shown to the model</span> `
+              : "") +
             `${mdLiteToHtml(truncate(ev.text, 400))}</div>`);
           break;
         case "text":

@@ -180,8 +180,23 @@ Minutes of tool calls went with it.
 The call now retries network failures, 429 and the 5xx family including 529
 (overloaded), backing off between attempts and honouring `Retry-After`. A bad key
 or a malformed request is a real answer and comes straight back rather than being
-retried four times. Every retry shows in the trace, and the message on a genuine
+retried six times. Every retry shows in the trace, and the message on a genuine
 outage says how many attempts were spent and that saying "continue" resumes.
+
+The first version of that policy — four attempts inside six seconds — was not a
+policy for a phone. A wifi-to-cellular handover, a lift, a tunnel: these last tens
+of seconds, and every attempt spent inside the window is wasted. The budget is now
+six attempts over roughly half a minute, and when `navigator.onLine` says the
+device is offline the run **holds** for up to 45 seconds waiting for the `online`
+event rather than spending an attempt. `navigator.onLine` reports the link and not
+whether anything is reachable, so it is only ever used to add patience, never to
+conclude anything. Proxy calls get the same treatment on a smaller scale: one
+retry for a network-level failure, none for a timeout, since the server has its
+own budget and a slow answer will not become a fast one.
+
+Both failure messages now record what the browser thought of the connection.
+"Failed to fetch" while offline and "Failed to fetch" while online are different
+problems and were previously indistinguishable in the report.
 
 Photo tools make the other half of this problem: every image they return is
 re-sent with every later turn, and a few `place_photos` calls at 800px is
