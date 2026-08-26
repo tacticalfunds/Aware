@@ -1,0 +1,36 @@
+/*
+ * Compact layout — everything the site does differently on a phone.
+ *
+ * These live in their own file, loaded with a media attribute, rather than
+ * inside an @media block: some in-app browsers and "Request Desktop Website"
+ * ignore the viewport meta and lay the page out at ~980px, at which point a
+ * media query resolves to the desktop layout on a 390px screen. The small
+ * script in index.html detects that and flips this stylesheet's media to "all".
+ * Keeping the rules here means there is still only one copy of them.
+ *
+ * Loaded after styles.css, so these win by source order.
+ */
+
+.layout { grid-template-columns: 1fr; }
+.chat-panel {
+  height: 60vh;
+  border-right: none;
+  border-bottom: 1px solid var(--border-soft);
+  position: static;
+}
+.directory-panel { height: auto; overflow: visible; }
+.directory-toolbar { top: 65px; }
+
+/* The pill row wraps to ~10 lines at phone widths, which would make the sticky
+   toolbar swallow most of the screen. Scroll it horizontally in one line instead. */
+.category-pills {
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
+  max-height: none;      /* the desktop 3-row cap must not clip a single row */
+  min-width: 0;
+  -webkit-overflow-scrolling: touch;
+  padding-bottom: 4px;
+  scrollbar-width: thin;
+}
+.pill { flex: 0 0 auto; }

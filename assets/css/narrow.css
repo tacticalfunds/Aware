@@ -1,0 +1,5 @@
+/* Applied under ~560px. Loaded the same way as compact.css — see the note there. */
+
+/* Stack link + note on narrow screens instead of squeezing two columns. */
+.manual-links { grid-template-columns: 1fr; gap: 2px; }
+.manual-open-multi { justify-self: start; margin-top: 6px; }

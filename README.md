@@ -31,14 +31,41 @@ Regenerate the merged dataset with the scripts described in
 
 ```
 index.html               Page shell: chat panel + directory panel + settings modal
-assets/css/styles.css    All styling (dark theme, responsive two-column layout)
+assets/css/styles.css    Base styling (dark theme, two-column layout)
+assets/css/compact.css   Phone layout — see "Phones that lie about their width"
+assets/css/narrow.css    Extra stacking under ~560px
+server.js                Static host + lookup/tile/image proxy (see Deploying)
 assets/js/tools-data.js  Tool database: categories -> tools (name, url, desc, tags)
 assets/js/chatbot.js     Chat brain: keyword matcher, workflow library, Claude API call
 assets/js/live-lookup.js Target extraction + real API calls for the live-lookup feature
 assets/js/agent.js       Autonomous investigation agent (Claude tool-use loop + vision)
+assets/js/tools/         Agent tool groups: geo, image, metadata, visual, photos
 assets/js/main.js        UI wiring: rendering, search/filter, chat, settings
 tools/                   Scripts that regenerate tools-data.js from upstream lists
 ```
+
+### Phones that lie about their width
+
+The phone layout lives in its own stylesheet loaded with a `media` attribute,
+rather than inside an `@media` block, because some browsers do not lay the page
+out at the width the device actually is.
+
+Safari's **Request Desktop Website** and many in-app WebViews ignore the viewport
+meta tag and lay the page out at ~980px, then scale the result down to fit. Every
+`max-width` media query resolves to the desktop layout, so a 390px phone renders
+two columns side by side — which is the correct rendering *for a 980px viewport*,
+and no CSS can tell the two cases apart.
+
+`screen.width` and the pointer type still describe the real device, so a short
+script in `index.html` uses them: when they say phone and the layout viewport says
+desktop, it flips `compact.css` to `media="all"`. Keeping the rules in one file
+means there is still only one copy of them, and the media attributes stay in place
+so ordinary desktop resizing is untouched.
+
+A browser doing this also scales the text down with everything else. The layout
+proportions come out right, but type ends up around 40% size — the real fix for
+that is turning the browser setting off, or opening the site in Safari/Chrome
+proper rather than an in-app browser.
 
 No build step, no dependencies for local use — open `index.html` directly or serve
 the folder with any static file server (e.g. `python3 -m http.server`).
