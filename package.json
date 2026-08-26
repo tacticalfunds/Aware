@@ -4,7 +4,8 @@
   "private": true,
   "description": "Aware — a single AI-concierge website over an OSINT tool directory.",
   "scripts": {
-    "start": "node server.js"
+    "start": "node server.js",
+    "codebook": "node tools/build-codebook.js"
   },
   "engines": {
     "node": ">=18"

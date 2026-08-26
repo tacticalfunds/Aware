@@ -68,3 +68,23 @@ to `assets/js/tools-data.js`. Mark them so they're recognized as curated:
 ```
 
 Tags feed both the directory search and the local chatbot matcher.
+
+## build-codebook.js
+
+Builds `aware-codebook.html`: a single self-contained document holding every
+hand-written source file in the project, plus a written tour of what the site
+does. Open it in a browser, or print it to PDF.
+
+```
+npm run codebook              # writes aware-codebook.html in the repo root
+node tools/build-codebook.js path/to/out.html
+```
+
+Generated data and vendored libraries are listed in the document but not inlined
+— together they are ~1.5 MB of material nobody reads, and two of them are rebuilt
+by the other scripts here. The counts on the cover (tools indexed, tools the agent
+can call, proxied sources) are read out of the source at build time, so they stay
+honest as the project changes.
+
+The output is gitignored. Rebuild it after changes rather than committing a copy
+that goes stale.

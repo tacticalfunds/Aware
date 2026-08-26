@@ -141,7 +141,7 @@ Two mechanisms, because no single one covers the whole directory:
 
 **1. Server-side proxy — for anything with an API.** Most OSINT APIs send no CORS
 headers, so a browser physically cannot call them. `server.js` proxies a fixed list of
-34 sources. It is **not** an open proxy: the client sends a source *name* and
+43 sources, 33 of which need no API key at all. It is **not** an open proxy: the client sends a source *name* and
 parameters, and the server builds the upstream URL itself from its own table — passing
 a raw URL through would be an SSRF hole. API keys can live in server env vars instead
 of every visitor's browser.
