@@ -15,10 +15,37 @@
 const http = require("http");
 const fs = require("fs");
 const path = require("path");
+const crypto = require("crypto");
 const { URL } = require("url");
 
 const PORT = process.env.PORT || 3000;
 const ROOT = __dirname;
+
+/*
+ * Which build is actually running. Without this there is no way to tell a bug
+ * that is still present from one the browser is holding an old copy of — and
+ * "it still does that" after a fix is shipped is otherwise unanswerable.
+ */
+const BUILD_ID = (() => {
+  const sha = process.env.RAILWAY_GIT_COMMIT_SHA || process.env.SOURCE_COMMIT || "";
+  if (sha) return sha.slice(0, 7);
+  try {
+    return require("child_process")
+      .execSync("git rev-parse --short HEAD", { cwd: ROOT, stdio: ["ignore", "pipe", "ignore"] })
+      .toString().trim();
+  } catch {
+    // No git in the deployment image: fall back to something that still changes
+    // whenever the code does.
+    try {
+      const h = crypto.createHash("sha1");
+      for (const f of ["assets/js/agent.js", "assets/js/main.js", "server.js"]) {
+        const st = fs.statSync(path.join(ROOT, f));
+        h.update(`${f}:${st.size}:${st.mtimeMs}`);
+      }
+      return "b" + h.digest("hex").slice(0, 6);
+    } catch { return "unknown"; }
+  }
+})();
 
 /* ------------------------------------------------------------------ *
  * Upstream sources. Each builds its own URL from validated params.
@@ -768,6 +795,29 @@ const MIME = {
   ".md": "text/markdown; charset=utf-8"
 };
 
+/*
+ * Cache validators.
+ *
+ * These were missing entirely — no Cache-Control, no ETag, no Last-Modified —
+ * which leaves the browser free to apply heuristic caching and serve whatever
+ * copy of the scripts it already has. In practice that meant a deployed fix did
+ * not reach the page, and a bug that had been fixed kept happening.
+ *
+ * "no-cache" does not mean "do not store": it means revalidate before use. With
+ * an ETag that costs one 304 per file per load and a deploy takes effect
+ * immediately, which is the right trade for a site with no cache-busted
+ * filenames.
+ */
+const ETAGS = new Map();   // absolute path -> { mtimeMs, size, tag }
+
+function etagFor(filePath, stat, data) {
+  const hit = ETAGS.get(filePath);
+  if (hit && hit.mtimeMs === stat.mtimeMs && hit.size === stat.size) return hit.tag;
+  const tag = `"${crypto.createHash("sha1").update(data).digest("base64").replace(/=+$/, "")}"`;
+  ETAGS.set(filePath, { mtimeMs: stat.mtimeMs, size: stat.size, tag });
+  return tag;
+}
+
 function serveStatic(req, res, pathname) {
   const rel = pathname === "/" ? "index.html" : decodeURIComponent(pathname).replace(/^\/+/, "");
   const filePath = path.join(ROOT, rel);
@@ -783,7 +833,21 @@ function serveStatic(req, res, pathname) {
       res.writeHead(404, { "Content-Type": "text/plain" }).end("Not found");
       return;
     }
-    res.writeHead(200, { "Content-Type": MIME[path.extname(filePath).toLowerCase()] || "application/octet-stream" });
+    let tag = null;
+    try { tag = etagFor(filePath, fs.statSync(filePath), data); } catch { /* serve without one */ }
+
+    const headers = {
+      "Content-Type": MIME[path.extname(filePath).toLowerCase()] || "application/octet-stream",
+      "Cache-Control": "no-cache"
+    };
+    if (tag) {
+      headers.ETag = tag;
+      if (req.headers["if-none-match"] === tag) {
+        res.writeHead(304, { ETag: tag, "Cache-Control": "no-cache" }).end();
+        return;
+      }
+    }
+    res.writeHead(200, headers);
     res.end(data);
   });
 }
@@ -798,6 +862,7 @@ const server = http.createServer(async (req, res) => {
     res.end(JSON.stringify({
       proxy: true,
       sources: availableSources(),
+      build: BUILD_ID,
       basemaps: Object.keys(BASEMAPS),
       search: { available: true, keyed: !!process.env.BRAVE_KEY,
                 engines: (process.env.BRAVE_KEY ? ["Brave"] : []).concat(SEARCH_ENGINES.map(e => e.name)) },
@@ -927,7 +992,7 @@ const OPTIONAL_KEYS = [
 
 server.listen(PORT, () => {
   const configured = Object.entries(availableSources()).filter(([, v]) => v).length;
-  console.log(`Aware listening on :${PORT} — ${configured}/${Object.keys(SOURCES).length} proxy sources available`);
+  console.log(`Aware listening on :${PORT} — build ${BUILD_ID} — ${configured}/${Object.keys(SOURCES).length} proxy sources available`);
 
   const missing = OPTIONAL_KEYS.filter(([k]) => !process.env[k]);
   if (missing.length) {

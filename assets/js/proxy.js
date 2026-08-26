@@ -12,6 +12,7 @@ const Proxy = {
   available: false,
   sources: {},
   basemaps: [],
+  build: null,
 
   /** One probe at startup; failure just means we stay in direct-fetch mode. */
   async detect() {
@@ -22,6 +23,10 @@ const Proxy = {
       this.available = !!data.proxy;
       this.sources = data.sources || {};
       this.basemaps = data.basemaps || [];
+      this.build = data.build || null;
+      // Printed so "it still does that after the fix" can be checked against the
+      // build actually running in the page, rather than the one that was deployed.
+      if (this.build) console.log(`Aware build ${this.build}`);
       return this.available;
     } catch {
       this.available = false;

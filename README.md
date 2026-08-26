@@ -117,6 +117,23 @@ Two modes, switchable from the "AI settings" button in the header:
   grounding answers on the closest-matching tools from the same directory. The key
   is stored only in `localStorage` and is never sent anywhere but Anthropic's API.
 
+### Knowing which build is running
+
+`server.js` used to send no cache validators at all — no `Cache-Control`, no
+`ETag`, no `Last-Modified` — which leaves a browser free to apply heuristic
+caching and keep serving whatever copy of the scripts it already has. A deployed
+fix could simply not reach the page, and a bug that had been fixed kept happening.
+
+Static files now carry `Cache-Control: no-cache` and a content-hash `ETag`.
+"no-cache" means revalidate before use, not "do not store": each file costs one
+304 per load and a deploy takes effect on the next reload, which is the right
+trade for a site with no cache-busted filenames.
+
+Alongside that, the running build is identified — from Railway's commit SHA, or
+git, or a hash of the source as a last resort. It appears in the startup log, in
+`GET /api/sources`, in the browser console at load, and in the mode badge's
+tooltip. "It still does that after the fix" is otherwise unanswerable.
+
 ### Surviving a bad connection
 
 A single dropped request used to end an investigation outright: one `fetch` to the

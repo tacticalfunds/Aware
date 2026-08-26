@@ -1397,7 +1397,8 @@ function updateModeBadge() {
   const base = state.apiKey ? `AI mode · ${state.model}` : "Local mode";
   els.modeBadge.textContent = Proxy.available ? `${base} · proxy` : base;
   els.modeBadge.classList.toggle("ai-on", !!state.apiKey);
-  els.modeBadge.title = Proxy.available
+  els.modeBadge.title = (Proxy.available
     ? "Served by server.js — lookups run server-side, so CORS-blocked sources work"
-    : "Static hosting — only CORS-friendly sources can be queried from the browser";
+    : "Static hosting — only CORS-friendly sources can be queried from the browser")
+    + (Proxy.build ? `\nBuild ${Proxy.build}` : "");
 }
