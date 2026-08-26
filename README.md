@@ -117,6 +117,25 @@ Two modes, switchable from the "AI settings" button in the header:
   grounding answers on the closest-matching tools from the same directory. The key
   is stored only in `localStorage` and is never sent anywhere but Anthropic's API.
 
+### Surviving a bad connection
+
+A single dropped request used to end an investigation outright: one `fetch` to the
+Claude API, no retry, and `Failed to fetch` — the browser's generic network
+`TypeError`, which carries no status and explains nothing — as the whole report.
+Minutes of tool calls went with it.
+
+The call now retries network failures, 429 and the 5xx family including 529
+(overloaded), backing off between attempts and honouring `Retry-After`. A bad key
+or a malformed request is a real answer and comes straight back rather than being
+retried four times. Every retry shows in the trace, and the message on a genuine
+outage says how many attempts were spent and that saying "continue" resumes.
+
+Photo tools make the other half of this problem: every image they return is
+re-sent with every later turn, and a few `place_photos` calls at 800px is
+megabytes of base64 per step — which is what a browser reports as a request that
+simply fails. Images older than a short window are replaced with a note that they
+were there; images the user attached are never touched.
+
 ## Autonomous investigation
 
 Give the concierge a task and it runs the investigation itself: plans, calls tools,
@@ -141,7 +160,7 @@ Two mechanisms, because no single one covers the whole directory:
 
 **1. Server-side proxy — for anything with an API.** Most OSINT APIs send no CORS
 headers, so a browser physically cannot call them. `server.js` proxies a fixed list of
-43 sources, 33 of which need no API key at all. It is **not** an open proxy: the client sends a source *name* and
+42 sources, 32 of which need no API key at all. It is **not** an open proxy: the client sends a source *name* and
 parameters, and the server builds the upstream URL itself from its own table — passing
 a raw URL through would be an SSRF hole. API keys can live in server env vars instead
 of every visitor's browser.
@@ -204,8 +223,13 @@ against the photo in hand, rather than handing the user a list of links.
   angle it was shot at, sorted by how close that heading is to the camera bearing
   the agent derived. Without `MAPILLARY_TOKEN` it falls back to handing the user
   prefilled Street View / Mapillary / KartaView links.
-- **`web_search`** — Brave when `BRAVE_KEY` is set, otherwise a best-effort
-  DuckDuckGo scrape. When DuckDuckGo serves the server a bot challenge the tool
+- **`web_search`** — Brave when `BRAVE_KEY` is set, otherwise the no-JavaScript
+  endpoints of DuckDuckGo, DuckDuckGo Lite and Mojeek in turn, taking the first
+  that answers. DuckDuckGo alone starts serving a bot challenge after two or three
+  queries from a hosted server, and an agent firing parallel searches trips that
+  immediately — so `POST /api/search` caches results for fifteen minutes,
+  serialises outbound requests with a minimum gap between them, and falls through
+  to the next engine when one is challenged. If every engine is blocked the tool
   says so explicitly: "could not check" and "nothing found" are different findings
   and the agent is told not to confuse them.
 

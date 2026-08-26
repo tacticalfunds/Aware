@@ -68,6 +68,22 @@ const Proxy = {
   },
 
   /**
+   * Web search through the server, which handles engine fallback, caching and
+   * throttling. Resolves to { engine, results } or { blocked, tried }.
+   */
+  async search(query) {
+    if (!this.available) throw new Error("Web search needs the server-side proxy (npm start).");
+    const res = await fetch("/api/search", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ query })
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.ok) throw new Error(data.error || `Search failed (${res.status})`);
+    return data;
+  },
+
+  /**
    * Fetches an image through the server and returns it base64-encoded, ready to
    * hand to the model as an image block. The browser cannot read cross-origin
    * image bytes itself, which is the whole reason this goes through the server.

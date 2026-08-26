@@ -324,6 +324,22 @@ a { color: var(--accent); text-decoration: none; }
   transform: translateY(1px);
 }
 
+.trace-retry {
+  font-size: 12.5px;
+  color: #f5a524;
+  margin: 4px 0;
+  line-height: 1.5;
+}
+.trace-imgs {
+  display: inline-block;
+  font-size: 11.5px;
+  color: var(--accent-strong);
+  background: var(--accent-soft);
+  border-radius: 10px;
+  padding: 1px 7px;
+  margin-right: 4px;
+}
+
 .plan-wrap { margin-top: 10px; }
 .plan-wrap .visual-title {
   display: flex;

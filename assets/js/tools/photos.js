@@ -279,23 +279,18 @@ const PHOTO_EXECUTORS = {
     const q = String(input.query || "").trim();
     if (!q) return "web_search needs a query.";
 
-    if (Proxy.has("brave_search")) {
-      const body = await Proxy.lookup("brave_search", { q });
-      const hits = body?.web?.results || [];
-      if (!hits.length) return `No web results for “${q}”.`;
-      return `Web results for “${q}” (Brave):\n\n` + hits.slice(0, 10).map((r, i) =>
-        `${i + 1}. ${r.title}\n   ${r.url}\n   ${stripHtml(r.description).slice(0, 240)}`).join("\n");
-    }
+    const out = await Proxy.search(q);
 
-    const body = await Proxy.lookup("ddg_search", { q });
-    if (body?.blocked) {
-      return `Web search is unavailable right now — DuckDuckGo returned a ${body.reason} to the server. ` +
-        `Treat this as "could not check", NOT as "nothing found". Either hand the user a search to run with ` +
-        `request_manual_lookup, or set BRAVE_KEY on the server for a keyed search that isn't rate-limited.`;
+    if (out.blocked) {
+      return `Web search could not run: every engine tried (${out.tried.join(", ")}) returned a bot challenge ` +
+        `or nothing parseable. Treat this as "could not check", NOT as "nothing found". ` +
+        `Hand the user the search with request_manual_lookup, or set BRAVE_KEY on the server for a keyed ` +
+        `search that isn't rate-limited.`;
     }
-    const hits = body?.results || [];
-    if (!hits.length) return `No web results for “${q}”.`;
-    return `Web results for “${q}” (DuckDuckGo):\n\n` + hits.map((r, i) =>
-      `${i + 1}. ${r.title}\n   ${r.url}${r.snippet ? `\n   ${r.snippet.slice(0, 240)}` : ""}`).join("\n");
+    if (!out.results.length) return `No web results for “${q}” (via ${out.engine}).`;
+
+    return `Web results for “${q}” — ${out.engine}${out.cached ? ", cached" : ""}:\n\n` +
+      out.results.map((r, i) =>
+        `${i + 1}. ${r.title}\n   ${r.url}${r.snippet ? `\n   ${r.snippet.slice(0, 240)}` : ""}`).join("\n");
   }
 };

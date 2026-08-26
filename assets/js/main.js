@@ -569,13 +569,18 @@ function createTraceBubble() {
           add(`<div class="trace-tool">⚙️ <strong>${escapeHtml(ev.name)}</strong> <code>${escapeHtml(truncate(JSON.stringify(ev.input), 140))}</code></div>`);
           break;
         case "tool_result":
-          add(`<div class="trace-result ${ev.ok ? "ok" : "err"}">${ev.ok ? "✓" : "✗"} ${mdLiteToHtml(truncate(ev.text, 400))}</div>`);
+          add(`<div class="trace-result ${ev.ok ? "ok" : "err"}">${ev.ok ? "✓" : "✗"} ` +
+            (ev.images ? `<span class="trace-imgs">🖼️ ${ev.images} photo${ev.images === 1 ? "" : "s"} shown to the model</span> ` : "") +
+            `${mdLiteToHtml(truncate(ev.text, 400))}</div>`);
           break;
         case "text":
           add(`<div class="trace-text">${mdLiteToHtml(ev.text)}</div>`);
           break;
         case "refusal":
           add(`<div class="trace-result err">Declined: ${escapeHtml(ev.text)}</div>`);
+          break;
+        case "retry":
+          add(`<div class="trace-retry">↻ ${escapeHtml(ev.text)}</div>`);
           break;
         case "error":
           add(`<div class="trace-result err">Error: ${escapeHtml(ev.text)}</div>`);

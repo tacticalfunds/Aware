@@ -42,6 +42,120 @@ function trimAgentHistory(messages) {
   }
 }
 
+/*
+ * Photo tools return real images, and every one of them is re-sent with every
+ * later turn. Four place_photos calls at 800px is several megabytes of base64 on
+ * the wire per step, which surfaces in the browser as a request that simply
+ * fails — "Failed to fetch", with no status to explain it.
+ *
+ * The model has already looked at the old ones and written down what it saw, so
+ * past a recent window they are replaced by a note that they were there. Images
+ * the user attached are never touched: those are the subject of the
+ * investigation, not working material.
+ */
+const AGENT_IMAGE_WINDOW = 6;
+
+function pruneAgentImages(messages) {
+  const keepFrom = Math.max(1, messages.length - AGENT_IMAGE_WINDOW);
+  let dropped = 0;
+
+  for (let i = 0; i < keepFrom; i++) {
+    const m = messages[i];
+    if (!Array.isArray(m.content)) continue;
+    for (const block of m.content) {
+      // Only tool results — an image block sitting directly in a user turn is
+      // one the user attached.
+      if (block.type !== "tool_result" || !Array.isArray(block.content)) continue;
+      const imgs = block.content.filter(b => b.type === "image").length;
+      if (!imgs) continue;
+      dropped += imgs;
+      block.content = [
+        ...block.content.filter(b => b.type !== "image"),
+        { type: "text", text:
+          `[${imgs} photo${imgs === 1 ? "" : "s"} shown here earlier, dropped from the transcript to keep the ` +
+          `request small. What you noted about them still stands; call the tool again to look afresh.]` }
+      ];
+    }
+  }
+  return dropped;
+}
+
+/* ---------- talking to the API ---------- */
+
+/*
+ * A dropped connection used to end an investigation outright: one fetch, no
+ * retry, and "Failed to fetch" — the browser's generic network TypeError, which
+ * says nothing about what went wrong — as the entire report. Several minutes of
+ * tool calls went with it.
+ *
+ * Retried here: network failures, 429, and the 5xx family including 529
+ * (overloaded). A bad key or a malformed request is a real answer and comes
+ * straight back, because retrying those only wastes time.
+ */
+const CLAUDE_RETRY_STATUS = new Set([408, 409, 429, 500, 502, 503, 504, 529]);
+const CLAUDE_MAX_ATTEMPTS = 4;
+
+const wait = ms => new Promise(r => setTimeout(r, ms));
+
+/** Turns an HTTP failure into something a person can act on. */
+function claudeErrorText(status, detail) {
+  const body = (() => {
+    try { return JSON.parse(detail)?.error?.message || ""; } catch { return ""; }
+  })() || detail.slice(0, 300);
+
+  if (status === 401) return `Claude API rejected the key (401). Check the key in AI settings — it should start with "sk-ant-".`;
+  if (status === 403) return `Claude API 403: ${body || "the key is not permitted to use this model."}`;
+  if (status === 413) return `The request was too large (413). The conversation has grown past what the API accepts — start a new investigation to clear it.`;
+  if (status === 400) return `Claude API rejected the request (400): ${body}`;
+  return `Claude API ${status}: ${body}`;
+}
+
+async function callClaude(apiKey, body, onEvent) {
+  let last = null;
+
+  for (let attempt = 1; attempt <= CLAUDE_MAX_ATTEMPTS; attempt++) {
+    if (attempt > 1) {
+      const delay = Math.min(8000, 700 * 2 ** (attempt - 2)) + Math.random() * 400;
+      onEvent({ type: "retry", text: `${last} — retrying in ${(delay / 1000).toFixed(1)}s (attempt ${attempt} of ${CLAUDE_MAX_ATTEMPTS})` });
+      await wait(delay);
+    }
+
+    let res;
+    try {
+      res = await fetch("https://api.anthropic.com/v1/messages", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-api-key": apiKey,
+          "anthropic-version": "2023-06-01",
+          "anthropic-dangerous-direct-browser-access": "true"
+        },
+        body: JSON.stringify(body)
+      });
+    } catch (err) {
+      // fetch only rejects on network-level failure, so there is no status to read.
+      last = `Network error reaching the Claude API (${err.message || "connection failed"})`;
+      continue;
+    }
+
+    if (res.ok) return res.json();
+
+    const detail = await res.text().catch(() => "");
+    if (!CLAUDE_RETRY_STATUS.has(res.status)) {
+      throw new Error(claudeErrorText(res.status, detail));
+    }
+    // Honour an explicit Retry-After over the backoff schedule.
+    const after = Number(res.headers.get("retry-after"));
+    if (after > 0 && after <= 30) await wait(after * 1000);
+    last = claudeErrorText(res.status, detail);
+  }
+
+  throw new Error(
+    `${last} — gave up after ${CLAUDE_MAX_ATTEMPTS} attempts. ` +
+    `The findings above are what the investigation reached; say "continue" to resume from there.`
+  );
+}
+
 /* ---------- tool definitions handed to the model ---------- */
 
 // Grouped tool modules live in assets/js/tools/ and register themselves through
@@ -732,6 +846,9 @@ async function runInvestigation({ apiKey, model, task, image, liveKeys = {}, onE
   const supportsThinking = !/haiku/i.test(model);
 
   for (let step = 0; step < AGENT_MAX_STEPS; step++) {
+    trimAgentHistory(messages);
+    pruneAgentImages(messages);
+
     const body = {
       model,
       max_tokens: 8000,
@@ -744,23 +861,7 @@ async function runInvestigation({ apiKey, model, task, image, liveKeys = {}, onE
       body.output_config = { effort: "high" };
     }
 
-    const res = await fetch("https://api.anthropic.com/v1/messages", {
-      method: "POST",
-      headers: {
-        "content-type": "application/json",
-        "x-api-key": apiKey,
-        "anthropic-version": "2023-06-01",
-        "anthropic-dangerous-direct-browser-access": "true"
-      },
-      body: JSON.stringify(body)
-    });
-
-    if (!res.ok) {
-      const detail = await res.text().catch(() => "");
-      throw new Error(`Claude API ${res.status}: ${detail.slice(0, 300)}`);
-    }
-
-    const data = await res.json();
+    const data = await callClaude(apiKey, body, onEvent);
 
     // Safety classifiers can decline; surface it rather than looping.
     if (data.stop_reason === "refusal") {

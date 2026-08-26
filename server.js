@@ -182,18 +182,6 @@ const SOURCES = {
     build: p => `https://api.openverse.org/v1/images/?q=${enc(p.q)}` +
       `&page_size=${enc(Math.min(Number(p.limit) || 12, 20))}&mature=false`
   },
-  ddg_search: {
-    // Best-effort web search with no key. DuckDuckGo serves datacenter IPs an
-    // anomaly page often enough that the transform reports that case explicitly
-    // rather than returning zero results and looking like "nothing exists".
-    build: p => `https://html.duckduckgo.com/html/?q=${enc(p.q)}`,
-    headers: {
-      Accept: "text/html,application/xhtml+xml",
-      "Accept-Language": "en-US,en;q=0.9"
-    },
-    timeout: 20000,
-    transform: body => parseDuckDuckGo(body && body.raw)
-  },
 
   // --- credentialed; key comes from the server env, never the browser ---
   mapillary_images: {
@@ -244,41 +232,169 @@ const SOURCES = {
   }
 };
 
+/* ------------------------------------------------------------------ *
+ * Web search.
+ *
+ * There is no free, keyless search API that reliably serves a datacenter IP, so
+ * this scrapes the no-JavaScript endpoints of several engines and takes the
+ * first that answers. DuckDuckGo alone was not enough: it starts returning a bot
+ * challenge after two or three queries from a hosted server, and an agent that
+ * fires parallel searches trips that immediately.
+ *
+ * Three defences, all of them here rather than in the client so nothing can skip
+ * them: results are cached, outbound requests are serialised with a minimum gap,
+ * and a challenged engine falls through to the next one.
+ *
+ * None of the markup below is an API contract, so every parser is deliberately
+ * loose and reports "blocked" rather than "empty" when it recognises nothing —
+ * an empty result set and a bot wall mean very different things to an
+ * investigation.
+ * ------------------------------------------------------------------ */
+
+const stripTags = t => String(t)
+  .replace(/<[^>]+>/g, "")
+  .replace(/&amp;/g, "&").replace(/&#x27;|&#0?39;/g, "'").replace(/&quot;/g, '"')
+  .replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&nbsp;/g, " ")
+  .replace(/\s+/g, " ")
+  .trim();
+
+const CHALLENGE = /anomaly|unusual traffic|challenge-platform|captcha|are you a robot|access denied/i;
+
+/** Pulls the real destination out of an engine's redirect wrapper. */
+function unwrap(href) {
+  const m = /[?&](?:uddg|url|r)=([^&"]+)/.exec(href);
+  if (m) { try { return decodeURIComponent(m[1]); } catch { /* fall through */ } }
+  return href.startsWith("//") ? "https:" + href : href;
+}
+
 /*
- * DuckDuckGo's no-JavaScript endpoint. Results are anchors carrying a redirect
- * URL with the real target in the uddg parameter. There is no API contract here,
- * so the parser is deliberately loose and reports "blocked" rather than "empty"
- * when the markup has none of the shapes it knows — an empty result set and a
- * bot wall mean very different things to an investigation.
+ * Attribute order in these pages is not stable and is nobody's contract, so pull
+ * every anchor apart first rather than matching href and class in a fixed order.
  */
-function parseDuckDuckGo(html) {
-  if (typeof html !== "string" || !html) return { blocked: true, reason: "empty response", results: [] };
-  if (/anomaly|unusual traffic|challenge-platform|captcha/i.test(html) && !/result__a/.test(html)) {
-    return { blocked: true, reason: "bot challenge", results: [] };
-  }
-
-  const results = [];
-  const re = /<a[^>]+class="[^"]*result__a[^"]*"[^>]+href="([^"]+)"[^>]*>([\s\S]*?)<\/a>/g;
-  const strip = t => t.replace(/<[^>]+>/g, "").replace(/&amp;/g, "&").replace(/&#x27;|&#39;/g, "'")
-    .replace(/&quot;/g, '"').replace(/&lt;/g, "<").replace(/&gt;/g, ">").replace(/&nbsp;/g, " ").trim();
-
+function anchors(html) {
+  const out = [];
+  const re = /<a\b([^>]*)>([\s\S]*?)<\/a>/g;
   let m;
-  while ((m = re.exec(html)) && results.length < 12) {
-    let href = m[1];
-    const uddg = /[?&]uddg=([^&"]+)/.exec(href);
-    if (uddg) { try { href = decodeURIComponent(uddg[1]); } catch { /* keep the redirect */ } }
-    if (href.startsWith("//")) href = "https:" + href;
-    results.push({ title: strip(m[2]), url: href, snippet: "" });
+  while ((m = re.exec(html))) {
+    const attrs = m[1];
+    const href = (/href="([^"]*)"/.exec(attrs) || /href='([^']*)'/.exec(attrs) || [])[1] || "";
+    const cls = (/class="([^"]*)"/.exec(attrs) || /class='([^']*)'/.exec(attrs) || [])[1] || "";
+    // Kept even without an href: snippet elements are anchors with none.
+    out.push({ href, cls, text: m[2] });
   }
+  return out;
+}
 
-  const sre = /<a[^>]+class="[^"]*result__snippet[^"]*"[^>]*>([\s\S]*?)<\/a>/g;
+function parseDuckDuckGo(html) {
+  const all = anchors(html);
+  const results = all.filter(a => a.href && /\bresult__a\b/.test(a.cls)).slice(0, 12)
+    .map(a => ({ title: stripTags(a.text), url: unwrap(a.href), snippet: "" }));
+  const snippets = all.filter(a => /\bresult__snippet\b/.test(a.cls)).map(a => stripTags(a.text));
+  results.forEach((r, i) => { if (snippets[i]) r.snippet = snippets[i]; });
+  return results.filter(r => r.title);
+}
+
+function parseDuckDuckGoLite(html) {
+  const results = anchors(html).filter(a => a.href && /\bresult-link\b/.test(a.cls)).slice(0, 12)
+    .map(a => ({ title: stripTags(a.text), url: unwrap(a.href), snippet: "" }));
+  const sre = /<td[^>]*class="[^"]*\bresult-snippet\b[^"]*"[^>]*>([\s\S]*?)<\/td>/g;
   for (let i = 0; i < results.length; i++) {
     const sm = sre.exec(html);
-    if (sm) results[i].snippet = strip(sm[1]);
+    if (sm) results[i].snippet = stripTags(sm[1]);
+  }
+  return results.filter(r => r.title);
+}
+
+function parseMojeek(html) {
+  const out = [];
+  // Mojeek wraps each result title in an <h2> holding the link; the snippet is
+  // the <p class="s"> that follows it.
+  const re = /<h2>\s*(<a\b[^>]*>[\s\S]*?<\/a>)\s*<\/h2>([\s\S]{0,900}?)(?=<h2>|<\/li>|$)/g;
+  let m;
+  while ((m = re.exec(html)) && out.length < 12) {
+    const a = anchors(m[1]).find(x => x.href);
+    if (!a) continue;
+    const sm = /<p[^>]*class="[^"]*\bs\b[^"]*"[^>]*>([\s\S]*?)<\/p>/.exec(m[2]);
+    const title = stripTags(a.text);
+    if (title) out.push({ title, url: unwrap(a.href), snippet: sm ? stripTags(sm[1]) : "" });
+  }
+  return out;
+}
+
+const SEARCH_ENGINES = [
+  { name: "DuckDuckGo", url: q => `https://html.duckduckgo.com/html/?q=${enc(q)}`, parse: parseDuckDuckGo },
+  { name: "DuckDuckGo Lite", url: q => `https://lite.duckduckgo.com/lite/?q=${enc(q)}`, parse: parseDuckDuckGoLite },
+  { name: "Mojeek", url: q => `https://www.mojeek.com/search?q=${enc(q)}`, parse: parseMojeek }
+];
+
+const SEARCH_CACHE = new Map();          // query -> { at, value }
+const SEARCH_CACHE_MS = 15 * 60 * 1000;
+const SEARCH_MIN_GAP_MS = 1200;          // between outbound requests, whatever the engine
+let searchChain = Promise.resolve();
+let lastSearchAt = 0;
+
+/** Serialises outbound searches and keeps a floor on the gap between them. */
+function queueSearch(fn) {
+  const run = searchChain.then(async () => {
+    const since = Date.now() - lastSearchAt;
+    if (since < SEARCH_MIN_GAP_MS) await sleep(SEARCH_MIN_GAP_MS - since);
+    try { return await fn(); } finally { lastSearchAt = Date.now(); }
+  });
+  // Keep the chain alive even if this link rejects.
+  searchChain = run.then(() => {}, () => {});
+  return run;
+}
+
+async function runSearch(rawQuery) {
+  const q = String(rawQuery || "").trim().slice(0, 300);
+  if (!q) throw Object.assign(new Error("Empty query"), { status: 400 });
+
+  const hit = SEARCH_CACHE.get(q);
+  if (hit && Date.now() - hit.at < SEARCH_CACHE_MS) return { ...hit.value, cached: true };
+
+  // A configured Brave key beats every scrape, and isn't rate-limited this way.
+  if (process.env.BRAVE_KEY) {
+    try {
+      const out = await runLookup("brave_search", { q });
+      const results = (out.body?.web?.results || []).slice(0, 10).map(r => ({
+        title: stripTags(r.title), url: r.url, snippet: stripTags(r.description || "")
+      }));
+      if (results.length) {
+        const value = { engine: "Brave", results, tried: ["Brave"] };
+        SEARCH_CACHE.set(q, { at: Date.now(), value });
+        return value;
+      }
+    } catch { /* fall through to the scrapers */ }
   }
 
-  if (!results.length) return { blocked: true, reason: "no parseable results", results: [] };
-  return { blocked: false, results };
+  const tried = [];
+  for (const engine of SEARCH_ENGINES) {
+    tried.push(engine.name);
+    try {
+      const out = await queueSearch(() => fetchOnce(engine.url(q), {
+        headers: {
+          "User-Agent": UPSTREAM_UA,
+          Accept: "text/html,application/xhtml+xml",
+          "Accept-Language": "en-US,en;q=0.9"
+        },
+        redirect: "follow"
+      }, 20000));
+
+      const html = typeof out.body?.raw === "string" ? out.body.raw : "";
+      if (!out.ok || !html) continue;
+      const results = engine.parse(html);
+      if (results.length) {
+        const value = { engine: engine.name, results, tried };
+        SEARCH_CACHE.set(q, { at: Date.now(), value });
+        return value;
+      }
+      // No results AND challenge markers means blocked; no results alone might
+      // genuinely be no results, but another engine is cheap enough to ask.
+      if (!CHALLENGE.test(html)) continue;
+    } catch { /* try the next engine */ }
+  }
+
+  return { blocked: true, tried, results: [] };
 }
 
 /** Which proxied sources are usable right now — the client uses this to decide. */
@@ -368,7 +484,6 @@ async function runLookup(name, params) {
     if (i > 0) await sleep(Math.min(4000, 400 * 2 ** Math.floor(i / endpoints.length)));
     try {
       const out = await fetchOnce(target, init, timeout);
-      if (out.ok && src.transform) out.body = src.transform(out.body);
       if (out.ok || !RETRYABLE.has(out.status)) {
         if (ck && out.ok) LOOKUP_CACHE.set(ck, { at: Date.now(), value: out });
         return out;
@@ -684,6 +799,8 @@ const server = http.createServer(async (req, res) => {
       proxy: true,
       sources: availableSources(),
       basemaps: Object.keys(BASEMAPS),
+      search: { available: true, keyed: !!process.env.BRAVE_KEY,
+                engines: (process.env.BRAVE_KEY ? ["Brave"] : []).concat(SEARCH_ENGINES.map(e => e.name)) },
       username_sites: (loadWmn().sites || []).length
     }));
     return;
@@ -726,6 +843,27 @@ const server = http.createServer(async (req, res) => {
         const result = await runLookup(source, params);
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify(result));
+      } catch (err) {
+        res.writeHead(err.status || 500, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: err.message }));
+      }
+    });
+    return;
+  }
+
+  if (pathname === "/api/search") {
+    if (req.method !== "POST") {
+      res.writeHead(405, { "Content-Type": "application/json" }).end(JSON.stringify({ error: "POST only" }));
+      return;
+    }
+    let raw = "";
+    req.on("data", c => { raw += c; if (raw.length > 2048) req.destroy(); });
+    req.on("end", async () => {
+      try {
+        const { query } = JSON.parse(raw || "{}");
+        const out = await runSearch(query);
+        res.writeHead(200, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ ok: true, ...out }));
       } catch (err) {
         res.writeHead(err.status || 500, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: err.message }));
