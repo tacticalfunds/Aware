@@ -134,6 +134,23 @@ git, or a hash of the source as a last resort. It appears in the startup log, in
 `GET /api/sources`, in the browser console at load, and in the mode badge's
 tooltip. "It still does that after the fix" is otherwise unanswerable.
 
+### Both diagrams, every investigation
+
+Asking for the visuals in the system prompt was not enough — a run would reason
+its way to a location and then write it up in prose, which is the part a reader
+cannot check.
+
+The loop now watches what the UI actually rendered (`showVisual` reports whether a
+visual reached the trace, so an `annotate_image` that came back "there's no image
+to annotate" does not count) and refuses to let a turn end without them. It asks
+once per diagram, so a model that declines is not put in a loop.
+
+The requirement is conditional on there being something to draw, because
+demanding a diagram the evidence does not support would only invite invented
+coordinates: `annotate_image` is required when an image is attached, and
+`plot_triangulation` once any lookup has returned real coordinates. With neither —
+a domain lookup, say — nothing is demanded.
+
 ### Surviving a bad connection
 
 A single dropped request used to end an investigation outright: one `fetch` to the

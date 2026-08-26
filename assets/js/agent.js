@@ -80,6 +80,69 @@ function pruneAgentImages(messages) {
   return dropped;
 }
 
+/*
+ * Both visuals, every investigation.
+ *
+ * Asking for them in the prompt was not enough — a run would reason its way to a
+ * location and then write it up in prose, which is the part a reader cannot
+ * check. So the loop watches for them and refuses to let a turn end without
+ * them, once each.
+ *
+ * The requirement is conditional on there being something to draw, because
+ * demanding a diagram the evidence does not support would only invite invented
+ * coordinates: annotate_image needs an attached photo, and plot_triangulation
+ * needs at least one real coordinate to have come back from a lookup.
+ */
+const COORD_IN_TEXT = /-?\d{1,2}\.\d{4,}\s*,\s*-?\d{1,3}\.\d{4,}/;
+
+function makeVisualWatch(hasImage) {
+  return {
+    hasImage,
+    sawCoords: false,
+    // Keyed by what the UI actually rendered, not by which tool was called: an
+    // annotate_image that came back "there's no image to annotate" drew nothing
+    // and must not count.
+    drawn: { annotations: false, triangulation: false },
+    asked: { annotations: false, triangulation: false },
+
+    /** Called when the UI confirms a visual reached the trace. */
+    markDrawn(type) {
+      if (type in this.drawn) this.drawn[type] = true;
+    },
+
+    /** Called for every tool result, to notice when real coordinates exist. */
+    note(text) {
+      if (typeof text === "string" && COORD_IN_TEXT.test(text)) this.sawCoords = true;
+    },
+
+    /**
+     * What still has to be drawn before the write-up. Returns null when there is
+     * nothing outstanding, or nothing the evidence would support.
+     */
+    outstanding() {
+      const want = [];
+      if (this.hasImage && !this.drawn.annotations && !this.asked.annotations) {
+        this.asked.annotations = true;
+        want.push(
+          "annotate_image — box the specific details your reading rests on, on the photo itself, " +
+          "so the user can check what you read rather than take it on trust. Even a partial read " +
+          "or a detail that ruled something OUT is worth boxing."
+        );
+      }
+      if (this.sawCoords && !this.drawn.triangulation && !this.asked.triangulation) {
+        this.asked.triangulation = true;
+        want.push(
+          "plot_triangulation — draw the plan view over the site's aerial imagery, with every anchor " +
+          "you located AND the camera object (lat, lon, bearing, uncertainty_m). If your fix is loose, " +
+          "say so with a large uncertainty_m; a rough station honestly labelled is far more useful than " +
+          "no diagram."
+        );
+      }
+      return want.length ? want : null;
+    }
+  };
+}
+
 /* ---------- talking to the API ---------- */
 
 /*
@@ -702,13 +765,24 @@ Method:
   against the visible scene with osm_nearby and against shadows with sun_position
   rather than accepting it. A Software tag naming an editor means the file has been
   re-saved and is worth flagging.
-- Show your working visually. Once you have identified the useful details, call
-  annotate_image to box them on the photo so the user can check what you read. Once
-  you have located any anchor, call plot_triangulation — it draws your working over
-  real aerial imagery of the site. Always pass the camera object: the sight lines,
-  view cone and error ellipse are the whole point of the diagram, and without them it
-  is a scatter of dots. Both make the reasoning inspectable instead of asking the user
-  to take it on trust.
+- SHOW YOUR WORKING VISUALLY. Every investigation ends with at least one of each
+  diagram it has the evidence to draw. Prose is the part a reader cannot check; these
+  are the part they can.
+
+  * annotate_image — required whenever an image is attached. Box the specific details
+    your reading rests on, on the photo itself. Box partial reads too, and box the
+    detail that ruled a candidate OUT — that is working, not failure. Do this as soon
+    as you have read the frame, not at the end.
+  * plot_triangulation — required as soon as any lookup has returned real coordinates.
+    Pass every anchor AND the camera object: lat, lon, bearing, uncertainty_m. The
+    sight lines, view cone and error ellipse are the whole point of it, and without a
+    camera it is a scatter of dots. A rough station with a large honest uncertainty_m
+    is far more useful than no diagram — but never invent coordinates to fill one in.
+
+  You may draw more than one of either as the picture changes: a second plan view
+  after moving the station is exactly the right way to show a candidate being
+  discarded. If you truly cannot draw one — no image, or no coordinates found — say
+  which and why in a single line.
 - On any image whose origin or location is unknown, run reverse_image_search early —
   it queries five engines at once and is usually the fastest route to an answer.
   When the results come back, say explicitly what corroborates across two or more
@@ -844,6 +918,7 @@ async function runInvestigation({ apiKey, model, task, image, liveKeys = {}, onE
 
   // Haiku 4.5 predates adaptive thinking and the effort control; sending either 400s.
   const supportsThinking = !/haiku/i.test(model);
+  const visuals = makeVisualWatch(!!image);
 
   for (let step = 0; step < AGENT_MAX_STEPS; step++) {
     trimAgentHistory(messages);
@@ -877,6 +952,16 @@ async function runInvestigation({ apiKey, model, task, image, liveKeys = {}, onE
     messages.push({ role: "assistant", content: data.content });
 
     if (data.stop_reason !== "tool_use") {
+      const want = visuals.outstanding();
+      if (want) {
+        messages.push({ role: "user", content: [{ type: "text", text:
+          `Before you finish, show the working visually — this is required, not optional:\n\n` +
+          want.map(w => `- ${w}`).join("\n") +
+          `\n\nCall the tool(s) now, then give your assessment. If you genuinely cannot ` +
+          `(no image attached, or no coordinates found), say which and why in one line instead — ` +
+          `but do not skip a diagram you have the evidence to draw.` }] });
+        continue;
+      }
       onEvent({ type: "done" });
       return;
     }
@@ -887,12 +972,20 @@ async function runInvestigation({ apiKey, model, task, image, liveKeys = {}, onE
     const results = await Promise.all(calls.map(async call => {
       onEvent({ type: "tool_call", name: call.name, input: call.input });
       try {
-        const out = await executeAgentTool(call.name, call.input, liveKeys, { onManualRequest, onVisual });
+        const out = await executeAgentTool(call.name, call.input, liveKeys, {
+          onManualRequest,
+          onVisual: spec => {
+            const shown = onVisual ? onVisual(spec) : false;
+            if (shown !== false) visuals.markDrawn(spec.type);
+            return shown;
+          }
+        });
 
         // An executor that found photographs returns { text, images }. Those go
         // back as image blocks inside the tool result, which is what lets the
         // model look at a candidate location instead of just reading its name.
         if (out && typeof out === "object" && Array.isArray(out.images)) {
+          visuals.note(out.text);
           onEvent({ type: "tool_result", name: call.name, ok: true, text: out.text, images: out.images });
           return {
             type: "tool_result",
@@ -907,6 +1000,7 @@ async function runInvestigation({ apiKey, model, task, image, liveKeys = {}, onE
           };
         }
 
+        visuals.note(String(out || ""));
         onEvent({ type: "tool_result", name: call.name, ok: true, text: out });
         return { type: "tool_result", tool_use_id: call.id, content: String(out || "(no data)") };
       } catch (err) {
