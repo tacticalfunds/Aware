@@ -8,6 +8,45 @@
  * still works for the handful of sources that send CORS headers.
  */
 
+/*
+ * fetch() rejects with a bare TypeError — "Failed to fetch" in Chrome, "Load
+ * failed" in Safari — for every network-level problem, carrying no status and no
+ * explanation. Handed to the agent verbatim it looks like the lookup returned
+ * nothing, when in fact it never completed.
+ *
+ * Every call also gets a deadline. The server bounds its own work, so anything
+ * past that ceiling is the connection itself having gone, and waiting longer
+ * only spends the investigation's time.
+ */
+const PROXY_TIMEOUT_MS = 35000;
+
+async function proxyFetch(path, body, what) {
+  let res;
+  try {
+    res = await fetch(path, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(body),
+      signal: AbortSignal.timeout(PROXY_TIMEOUT_MS)
+    });
+  } catch (err) {
+    if (err.name === "TimeoutError" || err.name === "AbortError") {
+      throw new Error(
+        `${what} timed out after ${PROXY_TIMEOUT_MS / 1000}s — the server did not answer. ` +
+        `Treat this as "could not check", not as "found nothing", and try a different route.`
+      );
+    }
+    throw new Error(
+      `${what} could not reach the server (${err.message || "network error"}). ` +
+      `The lookup never ran, so this says nothing about whether the data exists — ` +
+      `retry once or use a different tool.`
+    );
+  }
+
+  const data = await res.json().catch(() => ({}));
+  return { res, data };
+}
+
 const Proxy = {
   available: false,
   sources: {},
@@ -58,12 +97,7 @@ const Proxy = {
     if (this.sources[source] === false) {
       throw new Error(`"${source}" is not configured on the server — its API key env var is unset.`);
     }
-    const res = await fetch("/api/lookup", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ source, params })
-    });
-    const data = await res.json().catch(() => ({}));
+    const { res, data } = await proxyFetch("/api/lookup", { source, params }, `Lookup "${source}"`);
     if (!res.ok) throw new Error(data.error || `Proxy error ${res.status}`);
     if (!data.ok) {
       const detail = data.body?.error?.message || data.body?.message || `HTTP ${data.status}`;
@@ -78,12 +112,7 @@ const Proxy = {
    */
   async search(query) {
     if (!this.available) throw new Error("Web search needs the server-side proxy (npm start).");
-    const res = await fetch("/api/search", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ query })
-    });
-    const data = await res.json().catch(() => ({}));
+    const { res, data } = await proxyFetch("/api/search", { query }, "Web search");
     if (!res.ok || !data.ok) throw new Error(data.error || `Search failed (${res.status})`);
     return data;
   },
@@ -95,12 +124,7 @@ const Proxy = {
    */
   async image(url) {
     if (!this.available) throw new Error("Fetching images needs the server-side proxy (npm start).");
-    const res = await fetch("/api/image", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ url })
-    });
-    const data = await res.json().catch(() => ({}));
+    const { res, data } = await proxyFetch("/api/image", { url }, "Image fetch");
     if (!res.ok || !data.ok) throw new Error(data.error || `Image fetch failed (${res.status})`);
     return data;
   },

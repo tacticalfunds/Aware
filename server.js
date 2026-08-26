@@ -178,7 +178,11 @@ const SOURCES = {
     method: "POST",
     body: p => `data=${enc(p.query)}`,
     contentType: "application/x-www-form-urlencoded",
-    timeout: 30000,
+    // Short attempts so several fit inside the budget, and one at a time: the
+    // public instances allocate a small number of slots per IP, so two parallel
+    // queries from one agent turn are a reliable way to earn a 429.
+    timeout: 8000,
+    serial: true,
     cacheKey: p => `overpass:${p.query}`,
     cacheMs: 10 * 60 * 1000
   },
@@ -442,6 +446,21 @@ function availableSources() {
 const RETRYABLE = new Set([429, 500, 502, 503, 504]);
 const LOOKUP_CACHE = new Map();   // cacheKey -> { at, value }
 
+/*
+ * A hard ceiling on how long ONE /api/lookup may take, retries included.
+ *
+ * Without it the retry loop above could spend four minutes on a single call —
+ * eight attempts at a 30s timeout — holding a connection open the whole time
+ * without sending a byte. Nothing survives that: the platform's edge proxy or
+ * the browser drops it, and the page reports the useless generic "Failed to
+ * fetch". Retrying is right; retrying without a deadline is not.
+ *
+ * Giving up inside the budget is strictly better, because the agent is told to
+ * route around a failed lookup and can only do that if it gets an answer.
+ */
+const LOOKUP_BUDGET_MS = 22000;
+const MIN_ATTEMPT_MS = 1500;      // below this an attempt cannot finish anyway
+
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
 async function fetchOnce(url, init, timeout) {
@@ -458,7 +477,32 @@ async function fetchOnce(url, init, timeout) {
   }
 }
 
-async function runLookup(name, params) {
+/*
+ * Sources marked `serial` are queued one at a time. The agent fires tool calls in
+ * parallel by design, which is right for independent lookups and wrong for a
+ * rate-limited one — two simultaneous Overpass queries mostly buy two 429s.
+ */
+const SERIAL_CHAINS = new Map();
+
+function queueSerial(name, fn) {
+  const prev = SERIAL_CHAINS.get(name) || Promise.resolve();
+  const run = prev.then(fn, fn);
+  SERIAL_CHAINS.set(name, run.then(() => {}, () => {}));
+  return run;
+}
+
+function runLookup(name, params) {
+  const src = SOURCES[name];
+  // The clock starts when the request arrives, not when it reaches the front of
+  // the queue — otherwise a call that waits behind two slow ones still tries to
+  // spend a full budget of its own, and blows the caller's deadline instead.
+  const deadline = Date.now() + ((src && src.budget) || LOOKUP_BUDGET_MS);
+  return src && src.serial
+    ? queueSerial(name, () => runLookupOnce(name, params, deadline))
+    : runLookupOnce(name, params, deadline);
+}
+
+async function runLookupOnce(name, params, deadline = Date.now() + LOOKUP_BUDGET_MS) {
   const src = SOURCES[name];
   if (!src) throw Object.assign(new Error(`Unknown source: ${name}`), { status: 400 });
 
@@ -502,13 +546,27 @@ async function runLookup(name, params) {
   // The primary URL first, then each mirror, then one more pass over all of them
   // with a growing pause — a rate limit usually clears in a few seconds.
   const endpoints = [url, ...(src.mirrors || [])];
-  const timeout = src.timeout || 15000;
   const attempts = src.mirrors ? endpoints.length * 2 : 2;
   let last = null;
+  let spent = 0;
+
+  if (Date.now() >= deadline - MIN_ATTEMPT_MS) {
+    throw Object.assign(
+      new Error(`Upstream ${name}: queued behind other ${name} queries and ran out of time before it could run. ` +
+        `Nothing was checked — try again in a moment or take a different route.`),
+      { status: 503 }
+    );
+  }
 
   for (let i = 0; i < attempts; i++) {
     const target = endpoints[i % endpoints.length];
     if (i > 0) await sleep(Math.min(4000, 400 * 2 ** Math.floor(i / endpoints.length)));
+
+    // Never start an attempt that cannot finish inside the budget.
+    const timeout = Math.min(src.timeout || 15000, deadline - Date.now());
+    if (timeout < MIN_ATTEMPT_MS) break;
+    spent = i + 1;
+
     try {
       const out = await fetchOnce(target, init, timeout);
       if (out.ok || !RETRYABLE.has(out.status)) {
@@ -527,8 +585,11 @@ async function runLookup(name, params) {
   }
   // The agent is told the server retries for it, so the error has to say what was
   // actually spent — otherwise a single "HTTP 429" reads like one unlucky call.
-  if (last && attempts > 1) {
-    last.message += ` (after ${attempts} attempts across ${endpoints.length} endpoint${endpoints.length > 1 ? "s" : ""})`;
+  if (!last) last = Object.assign(new Error(`Upstream ${name}: no attempt fit in the time budget`), { status: 504 });
+  if (spent > 1 || endpoints.length > 1) {
+    last.message += ` (${spent} attempt${spent === 1 ? "" : "s"} across ` +
+      `${Math.min(spent, endpoints.length)} endpoint${endpoints.length > 1 ? "s" : ""}, ` +
+      `gave up inside a ${((src.budget || LOOKUP_BUDGET_MS) / 1000).toFixed(0)}s budget)`;
   }
   throw last;
 }

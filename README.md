@@ -95,8 +95,27 @@ Overpass — the OSM query backend behind `osm_nearby` and `osm_find_named` — 
 limits hard (429) and sheds load (504). `server.js` retries across four public
 mirrors with a growing backoff and caches successful queries for ten minutes, so
 a transient outage costs the agent nothing; only a genuine dead end reaches it,
-and the error says how many attempts were spent. Investigations used to burn their
-whole step budget on this.
+and the error says how many attempts were spent.
+
+Retrying without a deadline turned out to be its own failure. Eight attempts at a
+30-second timeout is four minutes on one lookup, holding a connection open the
+whole time without sending a byte — which nothing survives: the edge proxy or the
+browser drops it, and the page reports the generic `Failed to fetch`. Every lookup
+now has a **total budget of 22 seconds**, retries included, with the clock starting
+when the request arrives rather than when it reaches the front of a queue. An
+attempt that cannot finish inside the budget is never started, and the error says
+so.
+
+Sources marked `serial` — Overpass is the only one — are queued one at a time. The
+agent fires tool calls in parallel by design, which is right for independent
+lookups and wrong for a rate-limited one: the public instances allocate a couple of
+slots per IP, so two simultaneous queries from a single turn mostly buy two 429s.
+
+On the client, every proxy call carries a 35-second deadline and translates a
+network failure into something the agent can act on. `fetch` rejects with a bare
+`TypeError` for every network-level problem, carrying no status and no explanation;
+handed to the model verbatim it reads as though the lookup returned nothing, when
+in fact it never ran.
 
 Static hosting (GitHub Pages, Netlify drop) still works, but without `server.js`
 there's no proxy — the agent falls back to the handful of CORS-friendly sources plus
