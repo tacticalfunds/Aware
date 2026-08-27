@@ -14,7 +14,16 @@
  * has been through one. Corroborate against the visual content.
  */
 
-let LAST_IMAGE_METADATA = null;
+/*
+ * The metadata for the images sent with the current investigation, in the same
+ * order the agent sees them, so "image 2" means the same thing to the tool as it
+ * does in the task text. Set by the UI when a turn is sent.
+ */
+let INVESTIGATION_METADATA = [];   // [{ name, md }]
+
+function setInvestigationMetadata(list) {
+  INVESTIGATION_METADATA = (list || []).map(e => ({ name: e.name, md: e.metadata || null }));
+}
 
 const EXIF_FIELDS = [
   "Make", "Model", "LensModel", "Software",
@@ -46,8 +55,7 @@ async function extractImageMetadata(file) {
       md.gps = { lat: raw.latitude, lon: raw.longitude, altitude: raw.GPSAltitude ?? null };
     }
     md.hasAny = !!md.gps || Object.keys(md.fields).length > 0;
-    LAST_IMAGE_METADATA = md.hasAny ? md : null;
-    return LAST_IMAGE_METADATA;
+    return md.hasAny ? md : null;
   } catch {
     return null;
   }
@@ -120,18 +128,35 @@ const METADATA_TOOLS = [
   {
     name: "image_metadata",
     description:
-      "Re-reads the EXIF metadata of the image attached to this conversation: GPS coordinates, capture time, camera make/model, lens, exposure, and the Software tag that reveals editing. " +
-      "The metadata is already given to you when the image is attached — call this only to check a detail again later in the conversation. " +
-      "If it carries GPS, that is your fastest route to a location: verify it with osm_nearby and sun_position rather than accepting it, since EXIF is editable.",
-    input_schema: { type: "object", properties: {} }
+      "Re-reads the EXIF metadata of the images attached to this conversation: GPS coordinates, capture time, camera make/model, lens, exposure, and the Software tag that reveals editing. " +
+      "The metadata is already given to you when the images are attached — call this only to check a detail again later in the conversation. " +
+      "With several images, omit `image` to get all of them: capture times that run in sequence, or one file carrying GPS while the rest do not, are findings in their own right. " +
+      "If any carries GPS, that is your fastest route to a location: verify it with osm_nearby and sun_position rather than accepting it, since EXIF is editable.",
+    input_schema: {
+      type: "object",
+      properties: {
+        image: { type: "number", description: "1-based image number. Omit for all attached images." }
+      }
+    }
   }
 ];
 
 const METADATA_EXECUTORS = {
-  async image_metadata() {
-    if (!LAST_IMAGE_METADATA) {
-      return "No image metadata available — either no image has been attached this session, or the file carried no EXIF.";
+  async image_metadata(input) {
+    const all = INVESTIGATION_METADATA;
+    if (!all.length) return "No images are attached to this investigation.";
+
+    const wanted = typeof input?.image === "number"
+      ? [all[Math.round(input.image) - 1]].filter(Boolean)
+      : all;
+    if (!wanted.length) {
+      return `There is no image ${input.image} — ${all.length} image(s) are attached, numbered 1 to ${all.length}.`;
     }
-    return formatImageMetadata(LAST_IMAGE_METADATA);
+
+    return wanted.map(entry => {
+      const i = all.indexOf(entry) + 1;
+      const head = all.length > 1 ? `Image ${i} — ${entry.name}:\n` : "";
+      return head + formatImageMetadata(entry.md);
+    }).join("\n\n");
   }
 };

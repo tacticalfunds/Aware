@@ -153,6 +153,28 @@ git, or a hash of the source as a last resort. It appears in the startup log, in
 `GET /api/sources`, in the browser console at load, and in the mode badge's
 tooltip. "It still does that after the fix" is otherwise unanswerable.
 
+### Several images at once
+
+Up to six images per turn — file picker, paste, or dropped onto the chat panel.
+They are numbered in the order they were attached, and that numbering is the same
+everywhere: in the composer strip, in the line preceding each image block in the
+API request, in the task text, and in the `image` parameter that `annotate_image`,
+`image_metadata` and `reverse_image_search` all accept. So "the awning in image 2"
+means one thing, and an annotation lands on the photo the agent named.
+
+Six is the cap because attached images are the subject of the investigation and
+are never pruned from the transcript the way tool-fetched photos are — they are
+re-sent on every turn, and six at roughly 1.5k tokens each is where that stops
+being free.
+
+EXIF is read per file and labelled per image, which makes the set itself evidence:
+capture times running in sequence, or one file carrying GPS while the others do
+not, are findings in their own right, and a set whose cameras or times disagree is
+worth flagging. The prompt tells the agent to establish first whether the images
+even show the same place, then to work them against each other — a name illegible
+in one may be readable in another, and the same landmark seen from two positions
+is a real triangulation rather than a guess.
+
 ### Both diagrams, every investigation
 
 Asking for the visuals in the system prompt was not enough — a run would reason

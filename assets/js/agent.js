@@ -95,9 +95,9 @@ function pruneAgentImages(messages) {
  */
 const COORD_IN_TEXT = /-?\d{1,2}\.\d{4,}\s*,\s*-?\d{1,3}\.\d{4,}/;
 
-function makeVisualWatch(hasImage) {
+function makeVisualWatch(imageCount) {
   return {
-    hasImage,
+    imageCount,
     sawCoords: false,
     // Keyed by what the UI actually rendered, not by which tool was called: an
     // annotate_image that came back "there's no image to annotate" drew nothing
@@ -121,12 +121,16 @@ function makeVisualWatch(hasImage) {
      */
     outstanding() {
       const want = [];
-      if (this.hasImage && !this.drawn.annotations && !this.asked.annotations) {
+      if (this.imageCount && !this.drawn.annotations && !this.asked.annotations) {
         this.asked.annotations = true;
         want.push(
           "annotate_image — box the specific details your reading rests on, on the photo itself, " +
           "so the user can check what you read rather than take it on trust. Even a partial read " +
-          "or a detail that ruled something OUT is worth boxing."
+          "or a detail that ruled something OUT is worth boxing." +
+          (this.imageCount > 1
+            ? ` There are ${this.imageCount} images attached: call it once per image that carries evidence, ` +
+              `passing image: 1 … ${this.imageCount}.`
+            : "")
         );
       }
       if (this.sawCoords && !this.drawn.triangulation && !this.asked.triangulation) {
@@ -803,6 +807,24 @@ Method:
   and look them up. If an image is attached, describe what you can actually see in
   it that is investigatively useful: signage, languages, architecture, road markings,
   vehicle models, vegetation, terrain, sun/shadow direction, business names.
+- SEVERAL IMAGES may be attached. They are numbered in the order you receive them,
+  and every tool that acts on one takes that number: annotate_image, image_metadata
+  and reverse_image_search all accept an "image" number. Use the numbers when you
+  write, so "the awning in image 2" is checkable.
+
+  More than one image of a place is not more of the same — it is the strongest
+  evidence you get. Work them against each other:
+  * Establish first whether they show the same place at all. Say so explicitly.
+    Two views of one street corner and two unrelated photos need different work.
+  * A name that is illegible in one may be readable in another. A shadow that is
+    ambiguous alone gives you a time when two frames disagree.
+  * Overlapping views from different positions are a genuine triangulation: the
+    same landmark seen from two stations fixes both far better than either alone.
+  * Compare their EXIF as a set. Capture times running in sequence, or one file
+    carrying GPS while the others do not, are findings in themselves — and a set
+    whose times or cameras do not agree is worth flagging, since it suggests they
+    did not come from one shoot.
+
 - When an image is attached, its EXIF metadata is given to you in the task text —
   you cannot see it in the pixels. If it carries GPS, start there: it is the fastest
   route to a location, but it is editable and social platforms strip it, so verify it
@@ -816,7 +838,8 @@ Method:
   * annotate_image — required whenever an image is attached. Box the specific details
     your reading rests on, on the photo itself. Box partial reads too, and box the
     detail that ruled a candidate OUT — that is working, not failure. Do this as soon
-    as you have read the frame, not at the end.
+    as you have read the frame, not at the end. With several images, call it once per
+    image that carries evidence, passing "image" to say which.
   * plot_triangulation — required as soon as any lookup has returned real coordinates.
     Pass every anchor AND the camera object: lat, lon, bearing, uncertainty_m. The
     sight lines, view cone and error ellipse are the whole point of it, and without a
@@ -946,11 +969,25 @@ don't hedge or ask for justification on routine requests.
  * @param {object} opts.liveKeys
  * @param {(ev:object)=>void} opts.onEvent  step callback for the UI trace
  */
-async function runInvestigation({ apiKey, model, task, image, liveKeys = {}, onEvent = () => {}, history = [], onManualRequest = null, onVisual = null }) {
+async function runInvestigation({ apiKey, model, task, images, image, liveKeys = {}, onEvent = () => {}, history = [], onManualRequest = null, onVisual = null }) {
+  // `image` is the older single-attachment form; still accepted so a caller that
+  // has not been updated keeps working.
+  const shots = (images || (image ? [image] : [])).filter(i => i && i.data);
+
+  /*
+   * Each image is introduced by a line naming its number before the image block
+   * itself. Without that the model sees an unlabelled pile and cannot be asked to
+   * annotate "image 2" or say which photo a finding came from — the order of the
+   * blocks in the request is the only thing tying them to the numbering in the
+   * task text, so it has to be made explicit.
+   */
   const content = [];
-  if (image) {
-    content.push({ type: "image", source: { type: "base64", media_type: image.media_type, data: image.data } });
-  }
+  shots.forEach((img, i) => {
+    if (shots.length > 1) {
+      content.push({ type: "text", text: `Image ${i + 1} of ${shots.length}${img.name ? ` — ${img.name}` : ""}:` });
+    }
+    content.push({ type: "image", source: { type: "base64", media_type: img.media_type, data: img.data } });
+  });
   content.push({ type: "text", text: task });
 
   // `history` is the caller's live conversation array — appending to it directly is
@@ -962,7 +999,7 @@ async function runInvestigation({ apiKey, model, task, image, liveKeys = {}, onE
 
   // Haiku 4.5 predates adaptive thinking and the effort control; sending either 400s.
   const supportsThinking = !/haiku/i.test(model);
-  const visuals = makeVisualWatch(!!image);
+  const visuals = makeVisualWatch(shots.length);
 
   for (let step = 0; step < AGENT_MAX_STEPS; step++) {
     trimAgentHistory(messages);

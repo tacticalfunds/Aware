@@ -44,6 +44,10 @@ const IMAGE_TOOLS = [
     input_schema: {
       type: "object",
       properties: {
+        image: {
+          type: "number",
+          description: "Which attached image to search with, 1-based, when several are attached. Run it separately per image — engines index them independently and one may hit where another does not."
+        },
         looking_for: {
           type: "string",
           description: "What you want the user to look for and copy back, e.g. 'the top 5 result titles/URLs from each, plus TinEye's oldest date'."
@@ -63,6 +67,8 @@ const IMAGE_EXECUTORS = {
     if (!ctx.onManualRequest) {
       return "No interactive channel available, so the reverse image search can't be handed to the user.";
     }
+    // With several images attached the user has to be told which one to upload.
+    const which = Number.isFinite(input.image) ? Math.max(1, Math.round(input.image)) : null;
     const wanted = input.engines?.length
       ? REVERSE_IMAGE_ENGINES.filter(e =>
           input.engines.some(n => e.name.toLowerCase().includes(String(n).toLowerCase())))
@@ -72,8 +78,9 @@ const IMAGE_EXECUTORS = {
     const reply = await ctx.onManualRequest({
       tool_name: "Reverse image search",
       links: engines,
-      what_to_copy: input.looking_for ||
-        "From each engine: the top few result titles and URLs, plus any place/landmark name it suggests. From TinEye, the oldest match date.",
+      subject: which ? `Image ${which}` : null,
+      what_to_copy: (which ? `Search with IMAGE ${which}. ` : "") + (input.looking_for ||
+        "From each engine: the top few result titles and URLs, plus any place/landmark name it suggests. From TinEye, the oldest match date."),
       why: "Reverse image search across several engines — results that agree across two or more are much stronger evidence than a single hit.",
       multi: true
     });

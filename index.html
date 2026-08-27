@@ -101,16 +101,18 @@
       <div id="chatSuggestions" class="chat-suggestions"></div>
 
       <div id="attachPreview" class="attach-preview" hidden>
-        <img id="attachThumb" alt="Attached image preview" />
-        <span id="attachName" class="attach-name"></span>
-        <button type="button" id="attachRemove" class="icon-btn" aria-label="Remove image">✕</button>
+        <div id="attachStrip" class="attach-strip"></div>
+        <div class="attach-bar">
+          <span id="attachName" class="attach-name"></span>
+          <button type="button" id="attachRemove" class="icon-btn" aria-label="Remove all images">Clear all</button>
+        </div>
       </div>
 
       <form id="chatForm" class="chat-input-row">
-        <button type="button" id="attachBtn" class="attach-btn" title="Attach an image to investigate" aria-label="Attach image">📎</button>
-        <input id="attachInput" type="file" accept="image/*" hidden />
+        <button type="button" id="attachBtn" class="attach-btn" title="Attach images to investigate" aria-label="Attach images">📎</button>
+        <input id="attachInput" type="file" accept="image/*" multiple hidden />
         <input id="chatInput" type="text" autocomplete="off"
-               placeholder="Give me a task — or attach an image to investigate" />
+               placeholder="Give me a task — or attach images to investigate" />
         <button type="submit">Send</button>
       </form>
     </section>

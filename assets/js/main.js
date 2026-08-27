@@ -9,9 +9,10 @@ const state = {
   // same investigation with the same findings and tool surface.
   agentHistory: [],
   liveKeys: JSON.parse(localStorage.getItem("aware_live_keys") || "{}"),
-  attachedImage: null, // { media_type, data, name } — data is bare base64
-  attachedMetadata: null,
-  lastImageDataUrl: null,
+  // Each: { media_type, data, name, url, metadata } — data is bare base64, url is
+  // the data: URL kept for rendering annotations back over the right photo.
+  attachedImages: [],
+  sentImages: [],   // the set handed to the agent on the last turn
   fontStep: Math.min(5, Math.max(0, parseInt(localStorage.getItem("aware_font_step") ?? "1", 10) || 0)),
   chatWidth: localStorage.getItem("aware_chat_width") === "wide" ? "wide" : "normal"
 };
@@ -62,7 +63,7 @@ function cacheEls() {
   els.attachBtn = document.getElementById("attachBtn");
   els.attachInput = document.getElementById("attachInput");
   els.attachPreview = document.getElementById("attachPreview");
-  els.attachThumb = document.getElementById("attachThumb");
+  els.attachStrip = document.getElementById("attachStrip");
   els.attachName = document.getElementById("attachName");
   els.attachRemove = document.getElementById("attachRemove");
   els.fontDown = document.getElementById("fontDown");
@@ -359,9 +360,12 @@ function wireChat() {
   els.chatForm.addEventListener("submit", async e => {
     e.preventDefault();
     const text = els.chatInput.value.trim();
-    if (!text && !state.attachedImage) return;
+    if (!text && !state.attachedImages.length) return;
     els.chatInput.value = "";
-    pushUserMessage(text || "(investigate this image)", state.attachedImage);
+    pushUserMessage(
+      text || (state.attachedImages.length > 1 ? "(investigate these images)" : "(investigate this image)"),
+      state.attachedImages
+    );
     await handleUserQuery(text);
   });
 
@@ -394,77 +398,148 @@ function wireChat() {
 function wireAttach() {
   els.attachBtn.addEventListener("click", () => els.attachInput.click());
   els.attachInput.addEventListener("change", e => {
-    const file = e.target.files?.[0];
-    if (file) loadAttachment(file);
+    loadAttachments([...(e.target.files || [])]);
     els.attachInput.value = "";
   });
   els.attachRemove.addEventListener("click", clearAttachment);
-  // Pasting a screenshot straight into the chat is the fastest path for image tasks.
+
+  // Pasting a screenshot straight into the chat is the fastest path for image
+  // tasks, and a paste can carry several at once.
   els.chatInput.addEventListener("paste", e => {
-    const item = [...(e.clipboardData?.items || [])].find(i => i.type.startsWith("image/"));
-    if (item) {
-      const file = item.getAsFile();
-      if (file) { e.preventDefault(); loadAttachment(file); }
-    }
+    const files = [...(e.clipboardData?.items || [])]
+      .filter(i => i.type.startsWith("image/"))
+      .map(i => i.getAsFile())
+      .filter(Boolean);
+    if (files.length) { e.preventDefault(); loadAttachments(files); }
+  });
+
+  // Dropping a set of photos onto the chat is the other natural way to do this.
+  const panel = els.chatMessages.closest(".chat-panel") || els.chatMessages;
+  panel.addEventListener("dragover", e => { e.preventDefault(); panel.classList.add("drag-over"); });
+  panel.addEventListener("dragleave", () => panel.classList.remove("drag-over"));
+  panel.addEventListener("drop", e => {
+    e.preventDefault();
+    panel.classList.remove("drag-over");
+    const files = [...(e.dataTransfer?.files || [])].filter(f => f.type.startsWith("image/"));
+    if (files.length) loadAttachments(files);
   });
 }
 
 const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+/*
+ * Attached images are re-sent with every turn of the investigation — unlike the
+ * photos tools fetch, they are the subject and are never pruned away. Six at
+ * roughly 1.5k tokens each is the point where that stops being free.
+ */
+const MAX_ATTACHMENTS = 6;
 
-function loadAttachment(file) {
-  if (!file.type.startsWith("image/")) return;
-  if (file.size > MAX_IMAGE_BYTES) {
-    pushBotMessage(`That image is ${(file.size / 1048576).toFixed(1)} MB — too large to send. Please attach one under 5 MB.`, []);
+function loadAttachments(files) {
+  const room = MAX_ATTACHMENTS - state.attachedImages.length;
+  if (room <= 0) {
+    pushBotMessage(`That's already ${MAX_ATTACHMENTS} images, which is the limit — every one is re-sent on ` +
+      `every turn of the investigation. Remove one first, or send these and attach the rest after.`, []);
     return;
   }
+  const accepted = [];
+  for (const file of files.slice(0, room)) {
+    if (!file.type.startsWith("image/")) continue;
+    if (file.size > MAX_IMAGE_BYTES) {
+      pushBotMessage(`**${escapeHtml(file.name || "That image")}** is ${(file.size / 1048576).toFixed(1)} MB — ` +
+        `too large to send. Images must be under 5 MB.`, []);
+      continue;
+    }
+    accepted.push(file);
+  }
+  if (files.length > room) {
+    pushBotMessage(`Only took the first ${room} — the limit is ${MAX_ATTACHMENTS} images at a time.`, []);
+  }
+  accepted.forEach(loadAttachment);
+}
+
+function loadAttachment(file) {
+  const entry = {
+    media_type: file.type,
+    data: null,
+    name: file.name || "pasted image",
+    url: null,
+    metadata: null
+  };
+  state.attachedImages.push(entry);
+
   // EXIF must be read from the file itself — the vision API only sees pixels, so
   // without this the embedded GPS and capture time would be silently discarded.
   extractImageMetadata(file).then(md => {
-    state.attachedMetadata = md;
-    if (md) pushBotMessage("📷 **Metadata found in this image:**\n" + formatImageMetadata(md), []);
+    entry.metadata = md;
+    if (md) {
+      const which = state.attachedImages.length > 1 ? ` in **${entry.name}**` : " in this image";
+      pushBotMessage(`📷 **Metadata found${which}:**\n` + formatImageMetadata(md), []);
+    }
   });
 
   const reader = new FileReader();
   reader.onload = () => {
     const url = String(reader.result);
-    state.attachedImage = {
-      media_type: file.type,
-      data: url.split(",")[1], // strip the data: prefix; the API wants bare base64
-      name: file.name || "pasted image"
-    };
-    state.lastImageDataUrl = url;
-    els.attachThumb.src = url;
-    els.attachName.textContent = state.attachedImage.name;
-    els.attachPreview.hidden = false;
+    entry.url = url;
+    entry.data = url.split(",")[1];   // strip the data: prefix; the API wants bare base64
+    renderAttachments();
   };
   reader.readAsDataURL(file);
 }
 
+/** The thumbnail strip, rebuilt from state so removal cannot desync it. */
+function renderAttachments() {
+  const imgs = state.attachedImages;
+  els.attachPreview.hidden = imgs.length === 0;
+  els.attachName.textContent = imgs.length === 1
+    ? imgs[0].name
+    : `${imgs.length} images — the agent sees them numbered 1–${imgs.length}`;
+
+  els.attachStrip.innerHTML = "";
+  imgs.forEach((img, i) => {
+    const cell = document.createElement("div");
+    cell.className = "attach-cell";
+    cell.innerHTML =
+      `<img class="attach-thumb" src="${img.url || ""}" alt="${escapeHtml(img.name)}" />` +
+      `<span class="attach-idx">${i + 1}</span>` +
+      `<button type="button" class="attach-drop" aria-label="Remove ${escapeHtml(img.name)}">✕</button>`;
+    cell.querySelector(".attach-drop").addEventListener("click", () => {
+      state.attachedImages.splice(i, 1);
+      renderAttachments();
+    });
+    els.attachStrip.appendChild(cell);
+  });
+}
+
 function clearAttachment() {
-  state.attachedImage = null;
-  els.attachThumb.removeAttribute("src");
-  els.attachPreview.hidden = true;
+  state.attachedImages = [];
+  renderAttachments();
 }
 
 async function handleUserQuery(text) {
-  const image = state.attachedImage;
+  const images = state.attachedImages.filter(i => i.data);
 
   // In AI mode every turn goes to the agent. Routing only "investigate"-shaped
   // messages there used to drop follow-ups into a chat path that had no tools at
   // all, so "it's my own number" or "you do it" got a toolless answer that claimed
   // it couldn't run anything — while the tools sat right there unused.
   if (state.apiKey) {
+    // Keep a copy: the composer is cleared on send, but annotate_image draws over
+    // these later in the run.
+    if (images.length) state.sentImages = images;
     clearAttachment();
-    await runAgentTask(text, image);
+    await runAgentTask(text, images);
     return;
   }
 
-  if (image || looksLikeInvestigation(text)) {
+  if (images.length || looksLikeInvestigation(text)) {
     clearAttachment();
     pushBotMessage(
       "Running an investigation on my own needs an **Anthropic API key** — I have to reason about the " +
       "task, choose tools, read results and decide what to check next, which local keyword matching " +
-      "can't do." + (image ? " Reading an image needs one too." : "") +
+      "can't do." +
+      (images.length
+        ? ` Reading ${images.length > 1 ? `these ${images.length} images` : "an image"} needs one too.`
+        : "") +
       " Add your key under **AI settings** and I'll take the whole task. Meanwhile, here's what I can " +
       "still do without one:",
       []
@@ -505,24 +580,41 @@ function looksLikeInvestigation(text) {
  * Stating it in the task keeps the agent from having to guess at what it already
  * has, while the wording keeps it treating the values as evidence, not proof.
  */
-function buildAgentTask(text, image) {
-  const base = text || (image
-    ? "Investigate this image: work out where it was taken and anything else verifiable."
+function buildAgentTask(text, images) {
+  const n = images.length;
+  const base = text || (n
+    ? (n > 1
+      ? `Investigate these ${n} images: work out where they were taken and anything else verifiable. ` +
+        `Say whether they show the same place, and use each one to check the others.`
+      : "Investigate this image: work out where it was taken and anything else verifiable.")
     : "");
-  if (!image || !state.attachedMetadata) return base;
-  return `${base}\n\n--- EXIF metadata read from the attached file (the image itself; you cannot see this in the pixels) ---\n` +
-    `${formatImageMetadata(state.attachedMetadata)}\n--- end metadata ---`;
+  if (!n) return base;
+
+  const roll = images.map((img, i) => `Image ${i + 1}: ${img.name}`).join("\n");
+  // Metadata is per file, so it has to be labelled per image or the agent cannot
+  // tell which photo a GPS fix belongs to.
+  const meta = images
+    .map((img, i) => img.metadata
+      ? `--- EXIF read from Image ${i + 1} (${img.name}) — the file itself; you cannot see this in the pixels ---\n` +
+        `${formatImageMetadata(img.metadata)}`
+      : `--- Image ${i + 1} (${img.name}): no EXIF metadata present ---`)
+    .join("\n\n");
+
+  return `${base}\n\nAttached, in order:\n${roll}\n\n${meta}\n--- end metadata ---`;
 }
 
-async function runAgentTask(text, image) {
+async function runAgentTask(text, images) {
+  // The image_metadata tool reads from here, so its numbering matches the
+  // numbering the agent is given in the task text.
+  if (typeof setInvestigationMetadata === "function") setInvestigationMetadata(images);
 
   const trace = createTraceBubble();
   try {
     await runInvestigation({
       apiKey: state.apiKey,
       model: state.model,
-      task: buildAgentTask(text, image),
-      image: image ? { media_type: image.media_type, data: image.data } : null,
+      task: buildAgentTask(text, images),
+      images: images.map(i => ({ media_type: i.media_type, data: i.data, name: i.name })),
       liveKeys: state.liveKeys,
       onEvent: ev => trace.push(ev),
       history: state.agentHistory,
@@ -592,7 +684,7 @@ function createTraceBubble() {
     /** Renders an agent-produced visual into the trace. Returns false if it can't. */
     showVisual(spec) {
       let node = null;
-      if (spec.type === "annotations") node = renderAnnotations(spec.regions);
+      if (spec.type === "annotations") node = renderAnnotations(spec.regions, spec.image || 1);
       else if (spec.type === "triangulation") node = renderTriangulation(spec);
       if (!node) return false;
       steps.appendChild(node);
@@ -622,7 +714,8 @@ function createTraceBubble() {
             </a>`;
         card.innerHTML = `
           <div class="manual-head">🙋 Your turn — I can't query ${req.multi ? "these" : "this one"} directly</div>
-          <div class="manual-tool">${escapeHtml(req.tool_name)}</div>
+          <div class="manual-tool">${escapeHtml(req.tool_name)}${
+            req.subject ? ` <span class="manual-subject">${escapeHtml(req.subject)}</span>` : ""}</div>
           ${req.why ? `<div class="manual-why">${escapeHtml(req.why)}</div>` : ""}
           ${linkBlock}
           <div class="manual-copy"><strong>Copy back:</strong> ${escapeHtml(req.what_to_copy)}</div>
@@ -681,16 +774,22 @@ const ANNO_COLORS = {
   shadow: "#fbbf24", terrain: "#4ade80", person: "#94a3b8", other: "#60a5fa"
 };
 
-/** The attached photo with the agent's labelled boxes drawn over it. */
-function renderAnnotations(regions) {
-  const img = state.lastImageDataUrl;
-  if (!img) return null;
+/**
+ * One attached photo with the agent's labelled boxes drawn over it. `index` is
+ * 1-based, matching the numbering the agent is given in the task text, and the
+ * images are the ones sent with the turn — they are cleared from the composer on
+ * send, so the copy kept for this render is the one that matters.
+ */
+function renderAnnotations(regions, index = 1) {
+  const shot = (state.sentImages || [])[Math.max(0, Math.min(index - 1, (state.sentImages || []).length - 1))];
+  if (!shot || !shot.url) return null;
+  const many = (state.sentImages || []).length > 1;
   const el = document.createElement("div");
   el.className = "anno-wrap";
   el.innerHTML = `
-    <div class="visual-title">🖼️ Details this rests on</div>
+    <div class="visual-title">🖼️ Details this rests on${many ? ` — Image ${index}: ${escapeHtml(shot.name)}` : ""}</div>
     <div class="anno-frame">
-      <img class="anno-img" src="${img}" alt="Annotated evidence" />
+      <img class="anno-img" src="${shot.url}" alt="Annotated evidence" />
       <svg class="anno-svg" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true">
         ${regions.map((r, i) => {
           const c = ANNO_COLORS[r.category] || ANNO_COLORS.other;
@@ -1171,15 +1270,23 @@ function truncate(s, n) {
 }
 
 let msgCounter = 0;
-function pushUserMessage(text, image) {
+function pushUserMessage(text, images = []) {
   const div = document.createElement("div");
   div.className = "msg msg-user";
-  if (image) {
-    const img = document.createElement("img");
-    img.className = "msg-image";
-    img.src = `data:${image.media_type};base64,${image.data}`;
-    img.alt = "Attached image";
-    div.appendChild(img);
+  const list = Array.isArray(images) ? images : [images];
+  if (list.length) {
+    const grid = document.createElement("div");
+    grid.className = "msg-images" + (list.length > 1 ? " multi" : "");
+    list.forEach((image, i) => {
+      if (!image || !image.data) return;
+      const img = document.createElement("img");
+      img.className = "msg-image";
+      img.src = image.url || `data:${image.media_type};base64,${image.data}`;
+      img.alt = list.length > 1 ? `Attached image ${i + 1}` : "Attached image";
+      img.title = image.name || "";
+      grid.appendChild(img);
+    });
+    div.appendChild(grid);
   }
   const p = document.createElement("div");
   p.textContent = text;

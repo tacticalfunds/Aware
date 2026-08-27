@@ -340,6 +340,70 @@ a { color: var(--accent); text-decoration: none; }
   margin-right: 4px;
 }
 
+/* Attachment strip: several thumbnails, each removable, numbered to match the
+   numbering the agent is given. */
+.attach-strip {
+  display: flex;
+  gap: 8px;
+  overflow-x: auto;
+  padding-bottom: 2px;
+}
+.attach-cell {
+  position: relative;
+  flex: 0 0 auto;
+  width: 56px;
+  height: 56px;
+  border-radius: var(--radius-sm);
+  overflow: hidden;
+  border: 1px solid var(--border);
+  background: var(--bg);
+}
+.attach-thumb { width: 100%; height: 100%; object-fit: cover; display: block; }
+.attach-idx {
+  position: absolute;
+  left: 3px; bottom: 3px;
+  font-size: 10px;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--bg);
+  background: var(--accent);
+  border-radius: 8px;
+  padding: 2px 5px;
+}
+.attach-drop {
+  position: absolute;
+  top: 2px; right: 2px;
+  width: 17px; height: 17px;
+  line-height: 1;
+  font-size: 10px;
+  color: var(--text);
+  background: rgba(4, 7, 12, 0.72);
+  border: none;
+  border-radius: 50%;
+  cursor: pointer;
+  padding: 0;
+}
+@media (hover: hover) {
+  .attach-drop:hover { background: var(--danger); color: #fff; }
+}
+.attach-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 6px;
+}
+.attach-bar .attach-name { flex: 1 1 auto; min-width: 0; }
+.attach-bar .icon-btn { flex: 0 0 auto; font-size: 11.5px; }
+
+.chat-panel.drag-over { outline: 2px dashed var(--accent); outline-offset: -6px; }
+
+.msg-images.multi {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(88px, 1fr));
+  gap: 5px;
+}
+.msg-images.multi .msg-image { width: 100%; height: 96px; object-fit: cover; margin: 0; }
+
 .plan-wrap { margin-top: 10px; }
 .plan-wrap .visual-title {
   display: flex;
@@ -476,6 +540,16 @@ a { color: var(--accent); text-decoration: none; }
 .manual-open-multi { margin-bottom: 0; white-space: nowrap; }
 .manual-link-note { font-size: 11.5px; color: var(--text-dim); line-height: 1.4; }
 
+.manual-subject {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--bg);
+  background: var(--accent);
+  border-radius: 10px;
+  padding: 1px 8px;
+  margin-left: 6px;
+  vertical-align: middle;
+}
 .manual-copy { font-size: 12.5px; color: var(--text-dim); line-height: 1.5; margin-bottom: 8px; }
 .manual-input {
   width: 100%;
@@ -517,20 +591,13 @@ a { color: var(--accent); text-decoration: none; }
 .attach-preview[hidden] { display: none; }
 
 .attach-preview {
-  display: flex;
-  align-items: center;
-  gap: 8px;
+  /* Column, not row: the thumbnail strip sits above the name and clear button. */
+  display: block;
   margin: 0 16px 8px;
-  padding: 6px 8px;
+  padding: 7px 8px;
   background: var(--bg-card);
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
-}
-.attach-preview img {
-  width: 34px;
-  height: 34px;
-  object-fit: cover;
-  border-radius: 4px;
 }
 .attach-name {
   flex: 1;

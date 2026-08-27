@@ -29,13 +29,18 @@ const VISUAL_TOOLS = [
   {
     name: "annotate_image",
     description:
-      "Draws labelled colour-coded boxes over the attached image, marking the specific details your conclusion rests on. " +
+      "Draws labelled colour-coded boxes over an attached image, marking the specific details your conclusion rests on. " +
+      "With several images attached, set `image` to the one you are marking up — they are numbered in the order they were given to you — and call this once per image that carries evidence. " +
       "Use it once you have identified the useful features — it shows the user exactly what you read and where, so they can check your work rather than take it on trust. " +
       "Coordinates are fractions of the image (0-1) measured from the top-left, so x:0.1, y:0.2, w:0.25, h:0.1 is a box a quarter-width wide starting a tenth in from the left. " +
       "Categories colour the boxes: sign, landmark, vehicle, shadow, terrain, person, other.",
     input_schema: {
       type: "object",
       properties: {
+        image: {
+          type: "number",
+          description: "Which attached image to draw on, 1-based, matching the numbering you were given. Defaults to 1."
+        },
         regions: {
           type: "array",
           description: "Up to 12 boxes.",
@@ -123,9 +128,10 @@ const VISUAL_EXECUTORS = {
         h: Math.min(Math.max(r.h, 0.01), 1 - y)
       };
     });
-    const shown = ctx.onVisual({ type: "annotations", regions: clean });
-    if (!shown) return "There's no attached image to annotate.";
-    return `Annotated the image with ${clean.length} box(es): ` +
+    const index = Number.isFinite(input.image) ? Math.max(1, Math.round(input.image)) : 1;
+    const shown = ctx.onVisual({ type: "annotations", regions: clean, image: index });
+    if (!shown) return `There's no attached image ${index} to annotate.`;
+    return `Annotated image ${index} with ${clean.length} box(es): ` +
       clean.map(r => `${r.label} [${r.category}]`).join(", ") +
       `. The user can now see exactly which details you used.`;
   },
