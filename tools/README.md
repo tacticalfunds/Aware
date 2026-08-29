@@ -88,3 +88,28 @@ honest as the project changes.
 
 The output is gitignored. Rebuild it after changes rather than committing a copy
 that goes stale.
+
+## build-bundle.js
+
+Builds `aware-bundle.txt`: every hand-written source file concatenated into one
+plain-text file, for pasting somewhere whole — another assistant, a gist, an
+email.
+
+```
+npm run bundle                     # writes aware-bundle.txt in the repo root
+node tools/build-bundle.js out.txt --all
+```
+
+Each file sits between `>>>>> FILE: <path>` and `<<<<< END: <path>` markers.
+Everything strictly between them is the file, byte for byte — the end marker is
+there so trailing blank lines are unambiguous and a naive split is exact. The
+round trip is verified: extracting all 25 files reproduces them byte-identically
+and the rebuilt tree boots.
+
+By default the generated data and vendored libraries are listed but not included
+— `tools-data.js` alone is 869 KB, which takes the bundle past anything you could
+paste. `--all` includes them, at which point it is an archive rather than
+something to paste.
+
+The file manifest is shared with `build-codebook.js` through `manifest.js`, so the
+two can never disagree about what "all the code" means.
