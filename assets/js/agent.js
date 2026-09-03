@@ -147,6 +147,39 @@ function makeVisualWatch(imageCount) {
   };
 }
 
+/* ---------- which model handles which step ---------- */
+
+/*
+ * Most of what this loop does is mechanical: read a tool result, decide the next
+ * lookup. The judgement that needs the strongest model is concentrated in three
+ * places — the opening plan, any turn that has to actually look at a photograph,
+ * and the write-up.
+ *
+ * So mechanical turns go to a cheap worker and the rest stay on the model the
+ * user chose. The write-up is the awkward one, because a turn only reveals
+ * itself as the last one by not calling a tool: when the worker stops calling
+ * tools, its answer is discarded and the turn is re-run on the reasoning model.
+ * That costs one extra cheap call and guarantees the report is never written by
+ * the small model.
+ */
+const DEFAULT_WORKER_MODEL = "claude-haiku-4-5";
+
+/** True when this turn's input ends with images the model has not seen before. */
+function turnHasNewImages(messages) {
+  const last = messages[messages.length - 1];
+  if (!last || !Array.isArray(last.content)) return false;
+  return last.content.some(b =>
+    b.type === "image" ||
+    (b.type === "tool_result" && Array.isArray(b.content) && b.content.some(c => c.type === "image")));
+}
+
+function pickModel({ step, messages, reasoningModel, workerModel }) {
+  if (!workerModel || workerModel === reasoningModel) return reasoningModel;
+  if (step === 0) return reasoningModel;                 // the plan
+  if (turnHasNewImages(messages)) return reasoningModel; // looking at pixels
+  return workerModel;
+}
+
 /* ---------- what the run costs ---------- */
 
 /*
@@ -188,6 +221,11 @@ const fmtUSD = d =>
   d == null ? "cost unknown" :
   d < 0.01 ? `$${d.toFixed(4)}` :
   `$${d.toFixed(2)}`;
+
+function meterStep(meter, onEvent, model, usage) {
+  const stepCost = meter.record(model, usage);
+  onEvent({ type: "usage", model, usage, stepCost, running: meter.totals.cost });
+}
 
 function makeMeter() {
   return {
@@ -1063,7 +1101,7 @@ don't hedge or ask for justification on routine requests.
  * @param {object} opts.liveKeys
  * @param {(ev:object)=>void} opts.onEvent  step callback for the UI trace
  */
-async function runInvestigation({ apiKey, model, task, images, image, liveKeys = {}, onEvent = () => {}, history = [], onManualRequest = null, onVisual = null }) {
+async function runInvestigation({ apiKey, model, workerModel = null, task, images, image, liveKeys = {}, onEvent = () => {}, history = [], onManualRequest = null, onVisual = null }) {
   // `image` is the older single-attachment form; still accepted so a caller that
   // has not been updated keeps working.
   const shots = (images || (image ? [image] : [])).filter(i => i && i.data);
@@ -1091,8 +1129,6 @@ async function runInvestigation({ apiKey, model, task, images, image, liveKeys =
   messages.push({ role: "user", content });
   trimAgentHistory(messages);
 
-  // Haiku 4.5 predates adaptive thinking and the effort control; sending either 400s.
-  const supportsThinking = !/haiku/i.test(model);
   const visuals = makeVisualWatch(shots.length);
   const meter = makeMeter();
 
@@ -1100,28 +1136,40 @@ async function runInvestigation({ apiKey, model, task, images, image, liveKeys =
     trimAgentHistory(messages);
     pruneAgentImages(messages);
 
-    const body = {
-      model,
-      max_tokens: 8000,
-      system: AGENT_SYSTEM,
-      tools: AGENT_TOOLS,
-      messages
+    const buildBody = forModel => {
+      const b = {
+        model: forModel,
+        max_tokens: 8000,
+        system: AGENT_SYSTEM,
+        tools: AGENT_TOOLS,
+        messages
+      };
+      // Haiku 4.5 predates adaptive thinking and the effort control; sending
+      // either 400s, so this is decided per request now that the model varies.
+      if (!/haiku/i.test(forModel)) {
+        b.thinking = { type: "adaptive", display: "summarized" };
+        b.output_config = { effort: "high" };
+      }
+      return b;
     };
-    if (supportsThinking) {
-      body.thinking = { type: "adaptive", display: "summarized" };
-      body.output_config = { effort: "high" };
+
+    const chosen = pickModel({ step, messages, reasoningModel: model, workerModel });
+    let body = buildBody(chosen);
+    let data = await callClaude(apiKey, body, onEvent);
+
+    meterStep(meter, onEvent, body.model, data.usage);
+
+    // The worker has stopped calling tools, so this turn is the write-up. Hand
+    // it back and let the reasoning model produce the answer.
+    if (body.model !== model && data.stop_reason !== "tool_use") {
+      onEvent({ type: "retry", text:
+        `${body.model} finished the mechanical work — handing the write-up to ${model}.` });
+      body = buildBody(model);
+      data = await callClaude(apiKey, body, onEvent);
+      meterStep(meter, onEvent, body.model, data.usage);
     }
 
-    const data = await callClaude(apiKey, body, onEvent);
 
-    const stepCost = meter.record(body.model, data.usage);
-    onEvent({
-      type: "usage",
-      model: body.model,
-      usage: data.usage,
-      stepCost,
-      running: meter.totals.cost
-    });
 
     // Safety classifiers can decline; surface it rather than looping.
     if (data.stop_reason === "refusal") {

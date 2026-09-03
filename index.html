@@ -163,6 +163,19 @@
       <option value="claude-sonnet-5">Claude Sonnet 5 (balanced)</option>
       <option value="claude-haiku-4-5">Claude Haiku 4.5 (fastest, cheapest)</option>
     </select>
+
+    <label class="field-label" for="routingSelect">Step routing</label>
+    <select id="routingSelect">
+      <option value="off">Use one model for everything</option>
+      <option value="on">Route mechanical steps to Haiku 4.5 (cheaper)</option>
+    </select>
+    <p class="modal-note">
+      Routing keeps the model above for the opening plan, any step that looks at a photo, and the
+      write-up, and sends the rest — reading a lookup result, deciding the next one — to Haiku.
+      Handing the write-up back costs one extra call, so routing only pays on runs with several
+      mechanical steps; on a two-step run it can cost slightly more. The readout at the end of
+      each run breaks the spend down per model, so you can see which it was.
+    </p>
     <p class="modal-note">
       Your key is stored only in this browser's local storage and sent directly to Anthropic's API —
       never to any server of ours. Clear it any time.

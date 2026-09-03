@@ -5,6 +5,7 @@ const state = {
   searchTerm: "",
   apiKey: localStorage.getItem("aware_api_key") || "",
   model: localStorage.getItem("aware_model") || "claude-sonnet-5",
+  routing: localStorage.getItem("aware_routing") === "on" ? "on" : "off",
   // Claude-format conversation the agent appends to, so follow-up turns continue the
   // same investigation with the same findings and tool surface.
   agentHistory: [],
@@ -57,6 +58,7 @@ function cacheEls() {
   els.closeSettings = document.getElementById("closeSettings");
   els.apiKeyInput = document.getElementById("apiKeyInput");
   els.modelSelect = document.getElementById("modelSelect");
+  els.routingSelect = document.getElementById("routingSelect");
   els.saveSettings = document.getElementById("saveSettings");
   els.clearSettings = document.getElementById("clearSettings");
   els.suggestions = document.getElementById("chatSuggestions");
@@ -613,6 +615,9 @@ async function runAgentTask(text, images) {
     await runInvestigation({
       apiKey: state.apiKey,
       model: state.model,
+      // Routing to a worker only makes sense when the chosen model is bigger
+      // than the worker; picking Haiku and then "routing" to Haiku is a no-op.
+      workerModel: state.routing === "on" && state.model !== WORKER_MODEL ? WORKER_MODEL : null,
       task: buildAgentTask(text, images),
       images: images.map(i => ({ media_type: i.media_type, data: i.data, name: i.name })),
       liveKeys: state.liveKeys,
@@ -1463,6 +1468,7 @@ function wireSettings() {
   els.settingsBtn.addEventListener("click", () => {
     els.apiKeyInput.value = state.apiKey;
     els.modelSelect.value = state.model;
+    els.routingSelect.value = state.routing;
     for (const [name, input] of Object.entries(els.liveKeyInputs)) {
       input.value = state.liveKeys[name] || "";
     }
@@ -1475,8 +1481,10 @@ function wireSettings() {
   els.saveSettings.addEventListener("click", () => {
     state.apiKey = els.apiKeyInput.value.trim();
     state.model = els.modelSelect.value;
+    state.routing = els.routingSelect.value === "on" ? "on" : "off";
     localStorage.setItem("aware_api_key", state.apiKey);
     localStorage.setItem("aware_model", state.model);
+    localStorage.setItem("aware_routing", state.routing);
 
     const liveKeys = {};
     for (const [name, input] of Object.entries(els.liveKeyInputs)) {
@@ -1509,6 +1517,8 @@ function wireSettings() {
 }
 
 /* ---------------- Chat readability ---------------- */
+
+const WORKER_MODEL = "claude-haiku-4-5";
 
 const FONT_STEPS = [13, 14, 16, 18, 20, 22];
 const CHAT_WIDTHS = { normal: "460px", wide: "40vw" };
