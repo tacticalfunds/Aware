@@ -187,6 +187,139 @@ const SOURCES = {
     cacheMs: 10 * 60 * 1000
   },
 
+  /* --- public records: entries from the directory that turn out to have a
+         genuinely key-free API, so the agent can run them instead of handing
+         over a link --- */
+
+  openalex_works: {
+    // ~250M scholarly works. Free, no key; a mailto puts you in the polite pool.
+    build: p => `https://api.openalex.org/works?search=${enc(p.q)}&per-page=${enc(Math.min(Number(p.limit) || 8, 25))}` +
+      (process.env.OPENALEX_MAILTO ? `&mailto=${enc(process.env.OPENALEX_MAILTO)}` : "")
+  },
+  openalex_authors: {
+    build: p => `https://api.openalex.org/authors?search=${enc(p.q)}&per-page=${enc(Math.min(Number(p.limit) || 8, 25))}` +
+      (process.env.OPENALEX_MAILTO ? `&mailto=${enc(process.env.OPENALEX_MAILTO)}` : "")
+  },
+  crossref: {
+    // DOI metadata. Either a specific DOI or a free-text query.
+    build: p => p.doi
+      ? `https://api.crossref.org/works/${enc(p.doi)}`
+      : `https://api.crossref.org/works?query=${enc(p.q)}&rows=${enc(Math.min(Number(p.limit) || 8, 20))}`
+  },
+  orcid: {
+    // Public researcher records. Needs an explicit JSON Accept header.
+    build: p => `https://pub.orcid.org/v3.0/expanded-search/?q=${enc(p.q)}&rows=${enc(Math.min(Number(p.limit) || 8, 20))}`,
+    headers: { Accept: "application/json" }
+  },
+  gleif: {
+    // Legal Entity Identifiers — the registry behind company identity in finance.
+    build: p => p.lei
+      ? `https://api.gleif.org/api/v1/lei-records/${enc(p.lei)}`
+      : `https://api.gleif.org/api/v1/lei-records?filter[entity.legalName]=${enc(p.q)}&page[size]=${enc(Math.min(Number(p.limit) || 8, 20))}`
+  },
+  nvd_cve: {
+    // Rate-limited without a key, which is why the lookup is one CVE at a time.
+    build: p => p.cve
+      ? `https://services.nvd.nist.gov/rest/json/cves/2.0?cveId=${enc(p.cve)}`
+      : `https://services.nvd.nist.gov/rest/json/cves/2.0?keywordSearch=${enc(p.q)}&resultsPerPage=${enc(Math.min(Number(p.limit) || 5, 20))}`,
+    timeout: 20000
+  },
+  gitlab_user: {
+    build: p => `https://gitlab.com/api/v4/users?username=${enc(p.username)}`
+  },
+  gitlab_user_projects: {
+    build: p => `https://gitlab.com/api/v4/users/${enc(p.id)}/projects?per_page=20&order_by=updated_at`
+  },
+  npm_package: {
+    build: p => `https://registry.npmjs.org/${enc(p.name)}`,
+    /*
+     * A packument carries the complete manifest of every version ever published:
+     * react's is ~7 MB, and a lookup uses about ten fields of it. The abbreviated
+     * packument npm offers instead drops `time` and `maintainers` — the two most
+     * useful fields here — so the document is fetched whole and trimmed here.
+     *
+     * This has to happen server-side. The browser cannot decline a body it is
+     * already being sent, and 7 MB over a phone connection is the difference
+     * between a lookup and a stalled one.
+     */
+    maxBytes: 24 * 1024 * 1024,
+    reduce: b => {
+      if (!b || typeof b !== "object" || Array.isArray(b)) return b;
+      const latest = b["dist-tags"] && b["dist-tags"].latest;
+      const time = b.time || {};
+      return {
+        name: b.name,
+        description: b.description,
+        "dist-tags": b["dist-tags"],
+        // Enough to date the project and its most recent activity; the per-version
+        // history behind it is thousands of entries and answers nothing extra.
+        time: {
+          created: time.created,
+          modified: time.modified,
+          ...(latest && time[latest] ? { [latest]: time[latest] } : {})
+        },
+        versionCount: Object.keys(b.versions || {}).length,
+        versions: latest && b.versions && b.versions[latest] ? { [latest]: b.versions[latest] } : {},
+        maintainers: b.maintainers,
+        repository: b.repository,
+        homepage: b.homepage,
+        license: b.license
+      };
+    }
+  },
+  pypi_package: {
+    build: p => `https://pypi.org/pypi/${enc(p.name)}/json`,
+    /*
+     * Same shape of problem as npm: `releases` lists every uploaded file of every
+     * version — numpy's document is 3.4 MB and boto3's 3.1 MB — and `info.description`
+     * is the project's entire README. A lookup needs the version count and the
+     * summary, so the count is taken here and the bulk is dropped.
+     */
+    maxBytes: 24 * 1024 * 1024,
+    reduce: b => {
+      if (!b || typeof b !== "object" || Array.isArray(b)) return b;
+      const { description, description_content_type, ...info } = b.info || {};
+      return {
+        info,
+        releaseCount: Object.keys(b.releases || {}).length,
+        releases: {},
+        // Only the newest upload's timestamp is read, and the rest of the file
+        // list (hashes, sizes, one entry per wheel) answers nothing.
+        urls: (b.urls || []).slice(0, 1).map(u => ({ upload_time_iso_8601: u.upload_time_iso_8601 }))
+      };
+    }
+  },
+  openlibrary: {
+    build: p => `https://openlibrary.org/search.json?q=${enc(p.q)}&limit=${enc(Math.min(Number(p.limit) || 8, 20))}`
+  },
+  restcountries: {
+    build: p => `https://restcountries.com/v3.1/name/${enc(p.name)}?fields=name,cca2,cca3,capital,region,subregion,languages,currencies,idd,timezones,latlng,borders,population,car`
+  },
+  mastodon_account: {
+    /*
+     * The one source whose upstream host the caller supplies — fediverse accounts
+     * live on their own instance, so there is no fixed URL to build. That makes it
+     * the single place the "client names a source, never a URL" rule could leak, so
+     * the instance is validated before it is used: a public DNS hostname only, with
+     * a real TLD, and never an address that could reach this host or a private
+     * network.
+     */
+    validate: p => {
+      const host = String(p.instance || "").toLowerCase().trim();
+      if (!/^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)+$/.test(host)) {
+        return "instance must be a public hostname, e.g. mastodon.social";
+      }
+      if (!/\.[a-z]{2,}$/.test(host)) return "instance needs a real top-level domain";
+      if (/^(localhost|.*\.local|.*\.internal|.*\.localdomain)$/.test(host)) return "instance may not be a local name";
+      // A dotted-quad passes the hostname shape above, so reject numeric hosts
+      // outright rather than trying to enumerate private ranges.
+      if (/^\d{1,3}(\.\d{1,3}){3}$/.test(host)) return "instance may not be an IP address";
+      if (!/^[A-Za-z0-9._%+-]{1,64}$/.test(String(p.username || ""))) return "username has an unexpected shape";
+      return null;
+    },
+    build: p => `https://${String(p.instance).toLowerCase().trim()}/api/v1/accounts/lookup?acct=${enc(p.username)}`
+  },
+
   /* --- imagery and photos of places, so a candidate location can actually be
          looked at rather than merely named --- */
 
@@ -460,15 +593,27 @@ const LOOKUP_CACHE = new Map();   // cacheKey -> { at, value }
  */
 const LOOKUP_BUDGET_MS = 22000;
 const MIN_ATTEMPT_MS = 1500;      // below this an attempt cannot finish anyway
+const LOOKUP_MAX_BYTES = 2 * 1024 * 1024;   // per-source `maxBytes` overrides it
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 
-async function fetchOnce(url, init, timeout) {
+async function fetchOnce(url, init, timeout, maxBytes = LOOKUP_MAX_BYTES) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), timeout);
   try {
     const res = await fetch(url, { ...init, signal: controller.signal });
     const text = await res.text();
+    // A non-JSON body was already truncated below; a valid JSON one used to pass
+    // through at any size, which meant one unlucky source could push megabytes to
+    // a phone. A source that legitimately returns a large document declares its
+    // own ceiling and a `reduce` to bring it back down.
+    if (text.length > maxBytes) {
+      throw Object.assign(
+        new Error(`response was ${(text.length / 1048576).toFixed(1)} MB, over the ` +
+          `${(maxBytes / 1048576).toFixed(0)} MB lookup ceiling`),
+        { oversize: true }
+      );
+    }
     let body;
     try { body = JSON.parse(text); } catch { body = { raw: text.slice(0, 20000) }; }
     return { ok: res.ok, status: res.status, body };
@@ -515,6 +660,11 @@ async function runLookupOnce(name, params, deadline = Date.now() + LOOKUP_BUDGET
         { status: 503 }
       );
     }
+  }
+
+  if (src.validate) {
+    const problem = src.validate(params || {});
+    if (problem) throw Object.assign(new Error(`${name}: ${problem}`), { status: 400 });
   }
 
   const ck = src.cacheKey && src.cacheKey(params || {});
@@ -568,13 +718,19 @@ async function runLookupOnce(name, params, deadline = Date.now() + LOOKUP_BUDGET
     spent = i + 1;
 
     try {
-      const out = await fetchOnce(target, init, timeout);
+      const out = await fetchOnce(target, init, timeout, src.maxBytes);
       if (out.ok || !RETRYABLE.has(out.status)) {
+        // Trim before caching, so the cache holds what the client will actually
+        // be sent rather than the raw document.
+        if (out.ok && src.reduce) out.body = src.reduce(out.body, params || {});
         if (ck && out.ok) LOOKUP_CACHE.set(ck, { at: Date.now(), value: out });
         return out;
       }
       last = Object.assign(new Error(`Upstream ${name}: HTTP ${out.status}`), { status: 502, code: out.status });
     } catch (err) {
+      // An oversize body is the source's own shape, not a transient fault —
+      // retrying it just downloads the same megabytes again.
+      if (err.oversize) throw Object.assign(new Error(`Upstream ${name}: ${err.message}`), { status: 502 });
       last = Object.assign(
         new Error(err.name === "AbortError"
           ? `Upstream ${name} timed out after ${timeout / 1000}s`

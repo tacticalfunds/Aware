@@ -39,7 +39,7 @@ assets/js/tools-data.js  Tool database: categories -> tools (name, url, desc, ta
 assets/js/chatbot.js     Chat brain: keyword matcher, workflow library, Claude API call
 assets/js/live-lookup.js Target extraction + real API calls for the live-lookup feature
 assets/js/agent.js       Autonomous investigation agent (Claude tool-use loop + vision)
-assets/js/tools/         Agent tool groups: geo, image, metadata, visual, photos
+assets/js/tools/         Agent tool groups: geo, image, metadata, visual, photos, records
 assets/js/main.js        UI wiring: rendering, search/filter, chat, settings
 tools/                   Scripts that regenerate tools-data.js from upstream lists
 ```
@@ -244,13 +244,13 @@ Every investigation is structured in four phases the agent is instructed to foll
 (each extracted fact in a blockquote, rendered as a boxed callout), and
 **Assessment** (what's established, what isn't, confidence, next step).
 
-### How it covers 3,469 tools with ~20 callable ones
+### How it covers 3,469 tools with 48 callable ones
 
 Two mechanisms, because no single one covers the whole directory:
 
 **1. Server-side proxy — for anything with an API.** Most OSINT APIs send no CORS
 headers, so a browser physically cannot call them. `server.js` proxies a fixed list of
-42 sources, 32 of which need no API key at all. It is **not** an open proxy: the client sends a source *name* and
+55 sources, 45 of which need no API key at all. It is **not** an open proxy: the client sends a source *name* and
 parameters, and the server builds the upstream URL itself from its own table — passing
 a raw URL through would be an SSRF hole. API keys can live in server env vars instead
 of every visitor's browser.
@@ -332,7 +332,7 @@ Fetching runs through `POST /api/image`, which is **strictly allowlisted by host
 
 #### Geolocation tools — `assets/js/tools/geo.js`
 
-All seven geo capabilities the agent can run automatically live in one module,
+All nine geo capabilities the agent can run automatically live in one module,
 definitions and executors together. None need an API key:
 
 | Tool | Source | What it's for |
@@ -340,6 +340,8 @@ definitions and executors together. None need an API key:
 | `geocode` | Nominatim | Place/address ⇄ coordinates |
 | `place_search` | Photon | Fuzzy/partial names — a half-read shop sign |
 | `osm_nearby` | Overpass | What features should be visible at a candidate spot |
+| `osm_find_named` | Overpass | Where a *specific* read-off name sits within a radius |
+| `geo_measure` | offline | Distance and bearing between two fixes |
 | `elevation` | OpenTopoData | Rule candidates in/out by terrain; line-of-sight checks |
 | `weather_history` | Open-Meteo | What the weather **actually** was, back to 1940 |
 | `sun_position` | offline | Sun altitude/azimuth, shadow bearing and length |
@@ -349,6 +351,36 @@ Together these run the full verification loop: read visual clues → geocode →
 terrain → check what's nearby → verify sun/moon geometry → verify weather.
 `weather_history` is the sharpest of them for breaking a false claim — an image
 showing dry ground on a day the record says had 12mm of rain is a hard contradiction.
+
+#### Public records — `assets/js/tools/records.js`
+
+The directory's whole problem is that it can mostly only hand you a link. These are
+the entries that turned out to have a genuinely key-free API, so the agent runs them
+itself instead of telling you where to go:
+
+| Tool | Source | What it's for |
+|---|---|---|
+| `academic_search` | OpenAlex, Crossref | Place a person in a field, date a paper, resolve a DOI |
+| `researcher_lookup` | ORCID + OpenAlex | Name → persistent iD, institutions, publication record |
+| `company_lookup` | GLEIF LEI index | Registered legal name, jurisdiction, address, status |
+| `cve_lookup` | NIST NVD | What a CVE named in a banner or advisory actually is |
+| `package_lookup` | npm, PyPI | Maintainers, repo, release dates behind a piece of software |
+| `gitlab_lookup` | GitLab | The counterpart to `github_lookup` — a GitHub miss is not an absence |
+| `mastodon_lookup` | any instance | Fediverse account: join date, counts, profile fields |
+| `book_search` | Open Library | Date an edition seen in a photo; place an author in time |
+| `country_facts` | REST Countries | Driving side, calling code, languages, timezones — fast checks against an image |
+
+Two of these are stronger evidence than a search engine rather than merely more
+convenient. An LEI is issued against verified registration documents, so `company_lookup`
+gives a corporate identity that an about page can't contradict; an ORCID iD is
+persistent and self-registered, so `researcher_lookup` ties a *body of work* to a
+person rather than a name to a string. Both are told to say which record they relied
+on, because several people share most names.
+
+`mastodon_lookup` is the one tool where the caller names the upstream host — a
+fediverse account only exists on its own instance. That host is validated server-side
+to a public hostname before anything is fetched (no `localhost`, no link-local, no
+port, no path), since a caller-supplied host is otherwise an SSRF hole.
 
 Tool groups register through a `{GROUP}_TOOLS` / `{GROUP}_EXECUTORS` pair that
 `agent.js` merges; add a new group by dropping a file in `assets/js/tools/` and

@@ -413,7 +413,9 @@ const TOOL_GROUPS = [
   { tools: typeof VISUAL_TOOLS !== "undefined" ? VISUAL_TOOLS : [],
     executors: typeof VISUAL_EXECUTORS !== "undefined" ? VISUAL_EXECUTORS : {} },
   { tools: typeof PHOTO_TOOLS !== "undefined" ? PHOTO_TOOLS : [],
-    executors: typeof PHOTO_EXECUTORS !== "undefined" ? PHOTO_EXECUTORS : {} }
+    executors: typeof PHOTO_EXECUTORS !== "undefined" ? PHOTO_EXECUTORS : {} },
+  { tools: typeof RECORD_TOOLS !== "undefined" ? RECORD_TOOLS : [],
+    executors: typeof RECORD_EXECUTORS !== "undefined" ? RECORD_EXECUTORS : {} }
 ];
 
 const GROUPED_EXECUTORS = Object.assign({}, ...TOOL_GROUPS.map(g => g.executors));

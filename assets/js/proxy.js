@@ -116,7 +116,10 @@ const Proxy = {
     if (!res.ok) throw new Error(data.error || `Proxy error ${res.status}`);
     if (!data.ok) {
       const detail = data.body?.error?.message || data.body?.message || `HTTP ${data.status}`;
-      throw new Error(`Upstream ${source}: ${detail}`);
+      // The status rides along so a caller can tell the difference between "the
+      // lookup failed" and "the record does not exist" — a 404 is a finding, and
+      // reporting it as an error makes an absence look like an outage.
+      throw Object.assign(new Error(`Upstream ${source}: ${detail}`), { status: data.status });
     }
     return data.body;
   },

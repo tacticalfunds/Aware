@@ -20,7 +20,7 @@ const SECTIONS = [
     id: "server", title: "Server",
     blurb: "A dependency-free Node server that hosts the static site and proxies everything the browser cannot reach itself. The proxy is deliberately not an open one: the client names a source and passes parameters, and the server builds the upstream URL from its own table.",
     files: [
-      ["server.js", "Static host, the 43-source lookup proxy with mirror failover and caching, username enumeration across 716 sites, basemap tile proxy, and the allowlisted image fetcher."],
+      ["server.js", "Static host, the 55-source lookup proxy with mirror failover, caching, response-size ceilings and per-source body reduction, username enumeration across 716 sites, basemap tile proxy, and the allowlisted image fetcher."],
       ["package.json", "Name, start script, engine floor. No dependencies."],
       ["railway.json", "Railway build and deploy configuration."]
     ]
@@ -39,7 +39,8 @@ const SECTIONS = [
     id: "agent", title: "Investigation agent",
     blurb: "The autonomous half. A Claude tool-use loop with vision, conversation memory, a human-in-the-loop escape hatch, and a registry that merges tool groups from the files below.",
     files: [
-      ["assets/js/agent.js", "The loop itself, the system prompt with the investigation method, the tool-group registry, history trimming, and the network and identity tools."]
+      ["assets/js/agent.js", "The loop itself, the system prompt with the investigation method, the tool-group registry, history trimming, model routing, cost metering, and the network and identity tools."],
+      ["assets/js/entities.js", "Collects the coordinates, domains, addresses and names an investigation turns up, each tagged with the tool that produced it and the step it appeared at, so the write-up can be audited rather than taken on trust."]
     ]
   },
   {
@@ -50,7 +51,8 @@ const SECTIONS = [
       ["assets/js/tools/photos.js", "Photographs of places, street-level imagery and web search. Returns actual images inside the tool result so the model can look at a candidate location instead of only naming it."],
       ["assets/js/tools/image.js", "Multi-engine reverse image search, handed to the user as a manual step."],
       ["assets/js/tools/metadata.js", "EXIF extraction in the browser, including GPS, capture time and the editing tell-tales."],
-      ["assets/js/tools/visual.js", "The two tools that let the agent show its reasoning: annotated boxes over the photo, and the survey-style plan view."]
+      ["assets/js/tools/visual.js", "The two tools that let the agent show its reasoning: annotated boxes over the photo, and the survey-style plan view."],
+      ["assets/js/tools/records.js", "Public-record lookups the agent runs itself rather than linking to: academic output, ORCID researchers, the GLEIF company register, CVEs, npm and PyPI packages, GitLab and fediverse accounts, books, and country reference data."]
     ]
   },
   {
