@@ -324,6 +324,28 @@ a { color: var(--accent); text-decoration: none; }
   transform: translateY(1px);
 }
 
+.trace-usage {
+  font-size: 11.5px;
+  color: var(--text-faint);
+  margin: 2px 0;
+  font-variant-numeric: tabular-nums;
+}
+.trace-cost {
+  margin: 8px 0 2px;
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--bg-card);
+  font-variant-numeric: tabular-nums;
+}
+.cost-head { font-size: 13px; color: var(--text); }
+.cost-head strong { color: var(--accent-strong); }
+.cost-detail { font-size: 11.5px; color: var(--text-dim); margin-top: 3px; }
+.cost-models { list-style: none; margin: 6px 0 0; padding: 0; font-size: 11.5px; color: var(--text-dim); }
+.cost-models li { margin-bottom: 2px; }
+.cost-models strong { color: var(--text); font-weight: 600; }
+.cost-note { font-size: 11px; color: var(--text-faint); margin-top: 5px; line-height: 1.45; }
+
 .trace-retry {
   font-size: 12.5px;
   color: #f5a524;

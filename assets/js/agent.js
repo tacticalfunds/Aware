@@ -147,6 +147,100 @@ function makeVisualWatch(imageCount) {
   };
 }
 
+/* ---------- what the run costs ---------- */
+
+/*
+ * Every response carries a usage object and it was being thrown away, so an
+ * investigation could run 26 tool steps with images re-sent each turn and leave
+ * no trace of what it cost.
+ *
+ * Rates are Anthropic's first-party per-million-token API prices. Cache writes
+ * bill at roughly 1.25x the input rate and cache reads at roughly 0.1x, so the
+ * multipliers live here rather than a second table of hand-copied numbers.
+ * Everything this produces is an ESTIMATE — rates change, and a deployment
+ * routed through Bedrock or Vertex is priced by that partner instead.
+ */
+const MODEL_RATES = {
+  "claude-opus-5":   { in: 5.00, out: 25.00 },
+  "claude-sonnet-5": { in: 2.00, out: 10.00 },
+  "claude-haiku-4-5": { in: 1.00, out: 5.00 }
+};
+const CACHE_WRITE_MULTIPLIER = 1.25;
+const CACHE_READ_MULTIPLIER = 0.1;
+
+/** Dollars for one response, or null when the model's rate isn't known. */
+function estimateCost(model, usage) {
+  const rate = MODEL_RATES[model];
+  if (!rate || !usage) return null;
+  const input = usage.input_tokens || 0;
+  const output = usage.output_tokens || 0;
+  const write = usage.cache_creation_input_tokens || 0;
+  const read = usage.cache_read_input_tokens || 0;
+  return (
+    input * rate.in +
+    write * rate.in * CACHE_WRITE_MULTIPLIER +
+    read * rate.in * CACHE_READ_MULTIPLIER +
+    output * rate.out
+  ) / 1e6;
+}
+
+const fmtUSD = d =>
+  d == null ? "cost unknown" :
+  d < 0.01 ? `$${d.toFixed(4)}` :
+  `$${d.toFixed(2)}`;
+
+function makeMeter() {
+  return {
+    steps: 0,
+    byModel: {},            // model -> { steps, in, out, cacheWrite, cacheRead, cost }
+    unpriced: new Set(),    // models with no rate on file
+
+    record(model, usage) {
+      if (!usage) return null;
+      this.steps++;
+      const m = this.byModel[model] || (this.byModel[model] =
+        { steps: 0, in: 0, out: 0, cacheWrite: 0, cacheRead: 0, cost: 0 });
+      m.steps++;
+      m.in += usage.input_tokens || 0;
+      m.out += usage.output_tokens || 0;
+      m.cacheWrite += usage.cache_creation_input_tokens || 0;
+      m.cacheRead += usage.cache_read_input_tokens || 0;
+
+      const cost = estimateCost(model, usage);
+      if (cost == null) this.unpriced.add(model);
+      else m.cost += cost;
+      return cost;
+    },
+
+    get totals() {
+      const t = { steps: this.steps, in: 0, out: 0, cacheWrite: 0, cacheRead: 0, cost: 0 };
+      for (const m of Object.values(this.byModel)) {
+        t.in += m.in; t.out += m.out; t.cacheWrite += m.cacheWrite;
+        t.cacheRead += m.cacheRead; t.cost += m.cost;
+      }
+      return t;
+    },
+
+    /** A line per model when more than one ran, so routing can be checked. */
+    summary() {
+      const t = this.totals;
+      const perModel = Object.entries(this.byModel).map(([model, m]) => ({
+        model, steps: m.steps, in: m.in, out: m.out,
+        cacheRead: m.cacheRead, cost: m.cost
+      }));
+      return {
+        steps: t.steps,
+        input: t.in, output: t.out,
+        cacheWrite: t.cacheWrite, cacheRead: t.cacheRead,
+        cost: t.cost,
+        priced: this.unpriced.size === 0,
+        unpriced: [...this.unpriced],
+        perModel
+      };
+    }
+  };
+}
+
 /* ---------- talking to the API ---------- */
 
 /*
@@ -1000,6 +1094,7 @@ async function runInvestigation({ apiKey, model, task, images, image, liveKeys =
   // Haiku 4.5 predates adaptive thinking and the effort control; sending either 400s.
   const supportsThinking = !/haiku/i.test(model);
   const visuals = makeVisualWatch(shots.length);
+  const meter = makeMeter();
 
   for (let step = 0; step < AGENT_MAX_STEPS; step++) {
     trimAgentHistory(messages);
@@ -1019,9 +1114,19 @@ async function runInvestigation({ apiKey, model, task, images, image, liveKeys =
 
     const data = await callClaude(apiKey, body, onEvent);
 
+    const stepCost = meter.record(body.model, data.usage);
+    onEvent({
+      type: "usage",
+      model: body.model,
+      usage: data.usage,
+      stepCost,
+      running: meter.totals.cost
+    });
+
     // Safety classifiers can decline; surface it rather than looping.
     if (data.stop_reason === "refusal") {
       onEvent({ type: "refusal", text: data.stop_details?.explanation || "The request was declined." });
+      onEvent({ type: "cost", summary: meter.summary() });
       return;
     }
 
@@ -1043,6 +1148,7 @@ async function runInvestigation({ apiKey, model, task, images, image, liveKeys =
           `but do not skip a diagram you have the evidence to draw.` }] });
         continue;
       }
+      onEvent({ type: "cost", summary: meter.summary() });
       onEvent({ type: "done" });
       return;
     }
@@ -1094,6 +1200,7 @@ async function runInvestigation({ apiKey, model, task, images, image, liveKeys =
     messages.push({ role: "user", content: results });
   }
 
+  onEvent({ type: "cost", summary: meter.summary() });
   onEvent({ type: "text", text:
     `_Stopped after ${AGENT_MAX_STEPS} tool steps to bound cost — this is a budget limit, not a conclusion. ` +
     `Say **continue** and I'll pick up from where the working left off._` });

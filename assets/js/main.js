@@ -673,6 +673,43 @@ function createTraceBubble() {
         case "refusal":
           add(`<div class="trace-result err">Declined: ${escapeHtml(ev.text)}</div>`);
           break;
+        case "usage": {
+          // Per-step, folded away by default — the total is what matters, but the
+          // breakdown is what shows whether a step was cheap because it was routed
+          // to a smaller model or because the cache was warm.
+          const u = ev.usage || {};
+          const bits = [
+            `${(u.input_tokens || 0).toLocaleString()} in`,
+            `${(u.output_tokens || 0).toLocaleString()} out`,
+            u.cache_read_input_tokens ? `${u.cache_read_input_tokens.toLocaleString()} cached` : null,
+            ev.stepCost != null ? fmtMoney(ev.stepCost) : null
+          ].filter(Boolean).join(" · ");
+          add(`<div class="trace-usage">▪ ${escapeHtml(ev.model)} — ${bits}</div>`);
+          break;
+        }
+        case "cost": {
+          const c = ev.summary;
+          const rows = c.perModel.length > 1
+            ? `<ul class="cost-models">${c.perModel.map(m =>
+                `<li><strong>${escapeHtml(m.model)}</strong> — ${m.steps} step${m.steps === 1 ? "" : "s"}, ` +
+                `${(m.in + m.out).toLocaleString()} tokens, ${fmtMoney(m.cost)}</li>`).join("")}</ul>`
+            : "";
+          add(
+            `<div class="trace-cost">` +
+            `<div class="cost-head">${c.steps} model call${c.steps === 1 ? "" : "s"} · ` +
+            `<strong>${c.priced ? `~${fmtMoney(c.cost)}` : "cost unknown"}</strong></div>` +
+            `<div class="cost-detail">` +
+            `${c.input.toLocaleString()} input · ${c.output.toLocaleString()} output` +
+            (c.cacheRead ? ` · ${c.cacheRead.toLocaleString()} read from cache` : "") +
+            (c.cacheWrite ? ` · ${c.cacheWrite.toLocaleString()} written to cache` : "") +
+            `</div>${rows}` +
+            (c.priced
+              ? `<div class="cost-note">Estimate at Anthropic's list API rates — your actual bill is authoritative.</div>`
+              : `<div class="cost-note">No rate on file for ${c.unpriced.map(escapeHtml).join(", ")}, so this run is unpriced.</div>`) +
+            `</div>`
+          );
+          break;
+        }
         case "retry":
           add(`<div class="trace-retry">↻ ${escapeHtml(ev.text)}</div>`);
           break;
@@ -1262,6 +1299,12 @@ function notePlan(el, text) {
   note.className = "plan-note";
   note.textContent = text;
   el.querySelector(".plan-legend").before(note);
+}
+
+/** Sub-cent costs need four places or they all read as $0.00. */
+function fmtMoney(d) {
+  if (d == null) return "—";
+  return d < 0.01 ? `$${d.toFixed(4)}` : `$${d.toFixed(2)}`;
 }
 
 function truncate(s, n) {
