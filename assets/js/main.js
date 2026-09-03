@@ -356,6 +356,85 @@ function wireDirectory() {
   });
 }
 
+/* ---------------- Case board ---------------- */
+
+const ENTITY_INK = {
+  coordinates: "#22d3ee", name: "#ff3ea5", domain: "#4fd1c5", ipv4: "#a78bfa",
+  email: "#f5a524", url: "#60a5fa", btc: "#fbbf24", eth: "#4ade80"
+};
+
+/**
+ * Everything the run turned up, grouped by kind, each entry naming the tools
+ * that produced it. The chart above is a co-occurrence graph: a line means two
+ * entities came back from the same lookup. That is the only relation the data
+ * actually supports, so it is the only one drawn — nothing here infers a
+ * connection the tools did not show.
+ */
+function renderEntityBoard(board) {
+  if (!board || !board.entities.length) return null;
+
+  const el = document.createElement("div");
+  el.className = "board-wrap";
+
+  const nodes = board.entities.slice(0, 24);
+  const index = new Map(nodes.map((e, i) => [e.key, i]));
+  const links = board.links.filter(l => index.has(l.a) && index.has(l.b));
+
+  // Nodes on a circle, links as chords. At this scale that stays readable;
+  // a force layout would only add motion and no information. The frame is wider
+  // than it is tall so the labels either side have somewhere to go — at equal
+  // width the longest ones ran off the edge.
+  const W = 420, H = 300, R = 96, cx = W / 2, cy = H / 2;
+  const at = i => {
+    const a = (i / nodes.length) * Math.PI * 2 - Math.PI / 2;
+    return { x: cx + Math.cos(a) * R, y: cy + Math.sin(a) * R, a };
+  };
+
+  const edgeSvg = links.map(l => {
+    const p = at(index.get(l.a)), q = at(index.get(l.b));
+    return `<line x1="${p.x.toFixed(1)}" y1="${p.y.toFixed(1)}" x2="${q.x.toFixed(1)}" y2="${q.y.toFixed(1)}"
+      stroke="var(--border)" stroke-width="${Math.min(2, 0.6 + l.count * 0.3).toFixed(1)}" opacity="0.75"/>`;
+  }).join("");
+
+  const nodeSvg = nodes.map((e, i) => {
+    const p = at(i);
+    const ink = ENTITY_INK[e.type] || "#94a3b8";
+    const right = p.x >= cx;
+    const label = truncate(e.value, 16);
+    return `<g>
+      <circle cx="${p.x.toFixed(1)}" cy="${p.y.toFixed(1)}" r="${(3 + Math.min(e.sources.length, 3)).toFixed(1)}"
+        fill="${ink}"><title>${escapeHtml(e.value)} — ${escapeHtml(e.sources.join(", "))}</title></circle>
+      <text x="${(p.x + (right ? 8 : -8)).toFixed(1)}" y="${(p.y + 3).toFixed(1)}"
+        text-anchor="${right ? "start" : "end"}" font-size="8" fill="var(--text-dim)"
+        >${escapeHtml(label)}</text>
+    </g>`;
+  }).join("");
+
+  const groups = board.groups.map(g => `
+    <div class="board-group">
+      <h4 style="color:${ENTITY_INK[g.type] || "#94a3b8"}">${escapeHtml(g.label)} <span>${g.items.length}</span></h4>
+      <ul>${g.items.map(e => `
+        <li>
+          <span class="board-value">${escapeHtml(e.value)}</span>
+          <span class="board-src">${escapeHtml(e.sources.join(", "))}</span>
+        </li>`).join("")}</ul>
+    </div>`).join("");
+
+  el.innerHTML = `
+    <div class="visual-title">🗂️ Case board — ${board.total} entit${board.total === 1 ? "y" : "ies"} found</div>
+    <div class="board-scroll">
+      <svg class="board-svg" viewBox="0 0 ${W} ${H}" role="img"
+        aria-label="Entities found, linked where they came back from the same lookup">
+        ${edgeSvg}${nodeSvg}
+      </svg>
+    </div>
+    <div class="board-groups">${groups}</div>
+    <p class="board-note">Each entry names the tool that produced it. A line links two entities that
+      came back from the same lookup — the only relation the data supports.
+      ${board.shown < board.total ? `Showing the ${board.shown} best-corroborated of ${board.total}.` : ""}</p>`;
+  return el;
+}
+
 /* ---------------- Chat ---------------- */
 
 function wireChat() {
@@ -690,6 +769,11 @@ function createTraceBubble() {
             ev.stepCost != null ? fmtMoney(ev.stepCost) : null
           ].filter(Boolean).join(" · ");
           add(`<div class="trace-usage">▪ ${escapeHtml(ev.model)} — ${bits}</div>`);
+          break;
+        }
+        case "entities": {
+          const node = renderEntityBoard(ev.board);
+          if (node) { steps.appendChild(node); scrollChatToBottom(); }
           break;
         }
         case "cost": {

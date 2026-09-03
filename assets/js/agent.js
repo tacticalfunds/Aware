@@ -1131,6 +1131,7 @@ async function runInvestigation({ apiKey, model, workerModel = null, task, image
 
   const visuals = makeVisualWatch(shots.length);
   const meter = makeMeter();
+  const entities = typeof makeEntityLog === "function" ? makeEntityLog() : null;
 
   for (let step = 0; step < AGENT_MAX_STEPS; step++) {
     trimAgentHistory(messages);
@@ -1174,6 +1175,7 @@ async function runInvestigation({ apiKey, model, workerModel = null, task, image
     // Safety classifiers can decline; surface it rather than looping.
     if (data.stop_reason === "refusal") {
       onEvent({ type: "refusal", text: data.stop_details?.explanation || "The request was declined." });
+      if (entities) onEvent({ type: "entities", board: entities.snapshot() });
       onEvent({ type: "cost", summary: meter.summary() });
       return;
     }
@@ -1196,6 +1198,7 @@ async function runInvestigation({ apiKey, model, workerModel = null, task, image
           `but do not skip a diagram you have the evidence to draw.` }] });
         continue;
       }
+      if (entities) onEvent({ type: "entities", board: entities.snapshot() });
       onEvent({ type: "cost", summary: meter.summary() });
       onEvent({ type: "done" });
       return;
@@ -1221,6 +1224,7 @@ async function runInvestigation({ apiKey, model, workerModel = null, task, image
         // model look at a candidate location instead of just reading its name.
         if (out && typeof out === "object" && Array.isArray(out.images)) {
           visuals.note(out.text);
+          if (entities) entities.observe(call.name, call.input, out.text, step);
           onEvent({ type: "tool_result", name: call.name, ok: true, text: out.text, images: out.images });
           return {
             type: "tool_result",
@@ -1236,6 +1240,7 @@ async function runInvestigation({ apiKey, model, workerModel = null, task, image
         }
 
         visuals.note(String(out || ""));
+        if (entities) entities.observe(call.name, call.input, String(out || ""), step);
         onEvent({ type: "tool_result", name: call.name, ok: true, text: out });
         return { type: "tool_result", tool_use_id: call.id, content: String(out || "(no data)") };
       } catch (err) {
@@ -1248,6 +1253,7 @@ async function runInvestigation({ apiKey, model, workerModel = null, task, image
     messages.push({ role: "user", content: results });
   }
 
+  if (entities) onEvent({ type: "entities", board: entities.snapshot() });
   onEvent({ type: "cost", summary: meter.summary() });
   onEvent({ type: "text", text:
     `_Stopped after ${AGENT_MAX_STEPS} tool steps to bound cost — this is a budget limit, not a conclusion. ` +
