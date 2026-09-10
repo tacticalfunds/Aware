@@ -55,6 +55,14 @@ function trimAgentHistory(messages) {
  */
 const AGENT_IMAGE_WINDOW = 6;
 
+/*
+ * Note the interaction with prompt caching: rewriting a block mid-conversation
+ * invalidates the cache from that point, so a prune costs one cold miss. That is
+ * the right trade — the images it removes are far larger than the re-read — but
+ * it is only true because a prune fires when an image falls out of the window and
+ * then leaves the array alone. Pruning on a schedule, or rewriting blocks every
+ * turn, would pay that miss repeatedly and cost more than it saves.
+ */
 function pruneAgentImages(messages) {
   const keepFrom = Math.max(1, messages.length - AGENT_IMAGE_WINDOW);
   let dropped = 0;
@@ -1143,7 +1151,26 @@ async function runInvestigation({ apiKey, model, workerModel = null, task, image
       const b = {
         model: forModel,
         max_tokens: 8000,
-        system: AGENT_SYSTEM,
+        /*
+         * Prompt caching, and it is the difference between a run costing cents
+         * and costing most of a dollar.
+         *
+         * Every step of an investigation resends the whole prompt: the system
+         * prompt, all 48 tool schemas, and every prior turn. Uncached, a 10-step
+         * run bills that ~11.5k-token prefix ten times over at full input rate.
+         * Caching does not stop the resending — it reprices it at 0.1x.
+         *
+         * Rendering order is tools -> system -> messages, so a breakpoint on the
+         * last system block covers the tool schemas too. That is the one part
+         * guaranteed byte-identical on every request, so it gets the explicit
+         * marker; the conversation tail grows every turn and is left to the
+         * top-level automatic breakpoint, which walks forward as it grows.
+         */
+        system: [{ type: "text", text: AGENT_SYSTEM, cache_control: { type: "ephemeral" } }],
+        // 5-minute TTL (the default). A read refreshes the timer, and agent turns
+        // take seconds, so the entry stays warm for a whole run; the 1-hour TTL
+        // would only pay the 2x write premium for a window nothing here needs.
+        cache_control: { type: "ephemeral" },
         tools: AGENT_TOOLS,
         messages
       };

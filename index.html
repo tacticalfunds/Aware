@@ -177,6 +177,12 @@
       each run breaks the spend down per model, so you can see which it was.
     </p>
     <p class="modal-note">
+      Prompt caching does most of the saving on its own, and it is always on. Since caches are
+      per-model, routing makes each model keep its own — so the two levers overlap, and routing
+      now saves less on top of caching than it did before. Watch the “read from cache” figure in
+      the run readout: on any run past the first step it should be the largest number there.
+    </p>
+    <p class="modal-note">
       Your key is stored only in this browser's local storage and sent directly to Anthropic's API —
       never to any server of ours. Clear it any time.
     </p>
