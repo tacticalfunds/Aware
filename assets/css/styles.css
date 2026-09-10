@@ -777,12 +777,17 @@ a { color: var(--accent); text-decoration: none; }
 .category-pills {
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
   margin: 14px 0 0;
-  /* 44 categories wrap to ~8 rows, which would let the sticky toolbar swallow
-     half the viewport. Cap to exactly 3 rows (35px pill + 8px gap) so the cap
-     never slices a row in half, and scroll within. */
-  max-height: 121px;
+  /* 44 categories wrap to ~11 rows, which would let the sticky toolbar swallow
+     half the viewport. Cap to exactly three rows and scroll within.
+     Derived rather than hard-coded: the previous 121px was worked out from a
+     35px pill, but a pill is 31px (13px line + 7px padding + 1px border each
+     side), so the cap fell mid-way through row four and showed a sliver that
+     read as a rendering fault. */
+  --pill-h: 31px;
+  --pill-gap: 8px;
+  gap: var(--pill-gap);
+  max-height: calc(3 * var(--pill-h) + 2 * var(--pill-gap));
   overflow-y: auto;
   scrollbar-width: thin;
 }

@@ -128,7 +128,19 @@ const VISUAL_EXECUTORS = {
         h: Math.min(Math.max(r.h, 0.01), 1 - y)
       };
     });
-    const index = Number.isFinite(input.image) ? Math.max(1, Math.round(input.image)) : 1;
+    /*
+     * The renderer clamps an out-of-range number into the attached set, so asking
+     * for image 7 of 3 used to draw over image 3 while both the tool result and
+     * the caption above it said "image 7" — a mislabelled exhibit, which is worse
+     * than no exhibit. Refuse instead, the way image_metadata already does.
+     */
+    const count = typeof INVESTIGATION_METADATA !== "undefined" ? INVESTIGATION_METADATA.length : 0;
+    const index = Number.isFinite(input.image) ? Math.round(input.image) : 1;
+    if (index < 1 || (count && index > count)) {
+      return `There is no image ${index} — ${count} image(s) are attached, numbered 1 to ${count}. ` +
+        `Call image_metadata to see which is which.`;
+    }
+
     const shown = ctx.onVisual({ type: "annotations", regions: clean, image: index });
     if (!shown) return `There's no attached image ${index} to annotate.`;
     return `Annotated image ${index} with ${clean.length} box(es): ` +

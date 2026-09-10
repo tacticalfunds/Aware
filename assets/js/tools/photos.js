@@ -65,8 +65,12 @@ async function loadImages(candidates, limit) {
       const img = await Proxy.image(c.thumb);
       images.push({ media_type: img.media_type, data: img.data, caption: c.title });
       c.shown = true;
-    } catch {
+    } catch (err) {
+      // Kept rather than swallowed: when every download fails for the same
+      // reason — a host the image proxy won't fetch, say — that reason is the
+      // finding, and "none could be downloaded" alone is not diagnosable.
       c.shown = false;
+      c.failed = err.message || String(err);
     }
   }
   return images;
@@ -84,9 +88,11 @@ function describe(candidates, shownCount) {
     return `${i + 1}. ${c.shown ? "[SHOWN ABOVE] " : ""}${c.title}${bits ? ` — ${bits}` : ""}` +
       (c.page ? `\n   ${c.page}` : "");
   });
+  const why = [...new Set(candidates.map(c => c.failed).filter(Boolean))].slice(0, 2).join("; ");
   const header = shownCount === 0
     ? `${candidates.length} photo(s) found, but none of the thumbnails could be downloaded, so there is nothing for you ` +
-      `to look at — open the links yourself only if you hand them to the user. Do NOT treat this as a verification.`
+      `to look at — open the links yourself only if you hand them to the user. Do NOT treat this as a verification.` +
+      (why ? `\nWhy they failed: ${why}` : "")
     : `${candidates.length} photo(s) found; the ${shownCount === 1 ? "first one is" : `first ${shownCount} are`} ` +
       `attached above for you to look at.`;
   return `${header}\n` + lines.join("\n");

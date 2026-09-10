@@ -873,22 +873,50 @@ const IMAGE_HOSTS = [
 const IMAGE_MAX_BYTES = 5 * 1024 * 1024;
 const IMAGE_TYPES = new Set(["image/jpeg", "image/png", "image/gif", "image/webp"]);
 
-async function fetchImage(rawUrl) {
+const IMAGE_MAX_REDIRECTS = 4;
+
+/** Throws unless the URL is https and on the allowlist. Applied to every hop. */
+function checkImageTarget(rawUrl) {
   let u;
   try { u = new URL(String(rawUrl)); } catch { throw Object.assign(new Error("Not a URL"), { status: 400 }); }
   if (u.protocol !== "https:") throw Object.assign(new Error("HTTPS only"), { status: 400 });
   if (!IMAGE_HOSTS.some(re => re.test(u.hostname))) {
     throw Object.assign(new Error(`Host not allowed for image fetch: ${u.hostname}`), { status: 403 });
   }
+  return u;
+}
+
+async function fetchImage(rawUrl) {
+  let u = checkImageTarget(rawUrl);
 
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 20000);
   try {
-    const res = await fetch(u.toString(), {
-      headers: { "User-Agent": UPSTREAM_UA, Accept: "image/*" },
-      redirect: "follow",
-      signal: controller.signal
-    });
+    /*
+     * Redirects are followed by hand so the allowlist applies to every hop, not
+     * just the first. With redirect:"follow" the check was decorative: an
+     * allowlisted host that redirects — Openverse's /thumb/ endpoint is one by
+     * design, and any open redirect is another — could send this fetch to any
+     * host at all, internal addresses included. Verified: a host refused when
+     * named directly was fetched happily when reached via a redirect.
+     */
+    let res;
+    for (let hop = 0; ; hop++) {
+      res = await fetch(u.toString(), {
+        headers: { "User-Agent": UPSTREAM_UA, Accept: "image/*" },
+        redirect: "manual",
+        signal: controller.signal
+      });
+      if (![301, 302, 303, 307, 308].includes(res.status)) break;
+
+      const location = res.headers.get("location");
+      if (!location) throw Object.assign(new Error(`Upstream ${res.status} with no Location`), { status: 502 });
+      if (hop >= IMAGE_MAX_REDIRECTS) {
+        throw Object.assign(new Error(`Too many redirects (${IMAGE_MAX_REDIRECTS})`), { status: 502 });
+      }
+      // Relative Locations are legal, so resolve against the hop we just made.
+      u = checkImageTarget(new URL(location, u).toString());
+    }
     if (!res.ok) throw Object.assign(new Error(`Upstream ${res.status}`), { status: 502 });
 
     const type = (res.headers.get("content-type") || "").split(";")[0].trim().toLowerCase();
@@ -1036,7 +1064,20 @@ function etagFor(filePath, stat, data) {
 }
 
 function serveStatic(req, res, pathname) {
-  const rel = pathname === "/" ? "index.html" : decodeURIComponent(pathname).replace(/^\/+/, "");
+  let rel;
+  if (pathname === "/") {
+    rel = "index.html";
+  } else {
+    // decodeURIComponent throws URIError on a malformed escape such as "/%ZZ".
+    // That is a 400, not a crash: uncaught here it takes the whole process down,
+    // which made a one-line curl a denial of service against the site.
+    try {
+      rel = decodeURIComponent(pathname).replace(/^\/+/, "");
+    } catch {
+      res.writeHead(400, { "Content-Type": "text/plain" }).end("Bad request path");
+      return;
+    }
+  }
   const filePath = path.join(ROOT, rel);
 
   // Keep traversal inside the project directory.
@@ -1071,7 +1112,7 @@ function serveStatic(req, res, pathname) {
 
 /* ------------------------------------------------------------------ */
 
-const server = http.createServer(async (req, res) => {
+async function handleRequest(req, res) {
   const { pathname } = new URL(req.url, `http://${req.headers.host || "localhost"}`);
 
   if (pathname === "/api/sources") {
@@ -1187,6 +1228,21 @@ const server = http.createServer(async (req, res) => {
   }
 
   serveStatic(req, res, pathname);
+}
+
+/*
+ * Nothing a request can do may take the process down. Node's default for an
+ * unhandled rejection is to exit, so a throw anywhere in the handler above — a
+ * malformed path, a bad header, an upstream client blowing up — would otherwise
+ * end the site for everyone until the platform restarted it.
+ */
+const server = http.createServer((req, res) => {
+  handleRequest(req, res).catch(err => {
+    console.error(`Request failed: ${req.method} ${req.url} — ${err && err.stack || err}`);
+    if (res.headersSent) { res.destroy(); return; }
+    res.writeHead(500, { "Content-Type": "application/json" })
+       .end(JSON.stringify({ error: "Internal error" }));
+  });
 });
 
 /*

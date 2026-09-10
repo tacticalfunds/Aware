@@ -346,8 +346,10 @@ const GEO_EXECUTORS = {
     const out = [
       `Weather at ${input.lat}, ${input.lon} on ${input.date} (times UTC):`,
       code != null && `Overall: ${WMO[code] || `code ${code}`}`,
-      daily.temperature_2m_max?.[0] != null &&
-        `Temperature: ${daily.temperature_2m_min[0]}–${daily.temperature_2m_max[0]} °C`,
+      // Guarded on both ends: the archive can return one without the other, and
+      // reading the missing one threw and lost the whole lookup.
+      (daily.temperature_2m_min?.[0] != null || daily.temperature_2m_max?.[0] != null) &&
+        `Temperature: ${daily.temperature_2m_min?.[0] ?? "?"}–${daily.temperature_2m_max?.[0] ?? "?"} °C`,
       daily.precipitation_sum?.[0] != null && `Total precipitation: ${daily.precipitation_sum[0]} mm`
     ].filter(Boolean);
 

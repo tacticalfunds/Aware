@@ -443,6 +443,9 @@ function wireChat() {
     const text = els.chatInput.value.trim();
     if (!text && !state.attachedImages.length) return;
     els.chatInput.value = "";
+    // Send can land before the file reads finish; wait, or the turn goes out
+    // with the images shown in the transcript but absent from the request.
+    await attachmentsReady();
     pushUserMessage(
       text || (state.attachedImages.length > 1 ? "(investigate these images)" : "(investigate this image)"),
       state.attachedImages
@@ -543,7 +546,8 @@ function loadAttachment(file) {
     data: null,
     name: file.name || "pasted image",
     url: null,
-    metadata: null
+    metadata: null,
+    ready: null      // resolves once the base64 is in `data`
   };
   state.attachedImages.push(entry);
 
@@ -557,14 +561,35 @@ function loadAttachment(file) {
     }
   });
 
-  const reader = new FileReader();
-  reader.onload = () => {
-    const url = String(reader.result);
-    entry.url = url;
-    entry.data = url.split(",")[1];   // strip the data: prefix; the API wants bare base64
-    renderAttachments();
-  };
-  reader.readAsDataURL(file);
+  /*
+   * Reading a file is asynchronous, and Send does not wait for the DOM — hitting
+   * it straight after attaching used to send the turn with `data` still null on
+   * every image. They were filtered out silently, so the user's own bubble showed
+   * the photos while the agent was handed none and investigated the text alone.
+   */
+  entry.ready = new Promise(resolve => {
+    const reader = new FileReader();
+    reader.onload = () => {
+      const url = String(reader.result);
+      entry.url = url;
+      entry.data = url.split(",")[1];   // strip the data: prefix; the API wants bare base64
+      renderAttachments();
+      resolve();
+    };
+    reader.onerror = () => {
+      pushBotMessage(`**${escapeHtml(entry.name)}** could not be read, so it wasn't attached.`, []);
+      const i = state.attachedImages.indexOf(entry);
+      if (i >= 0) state.attachedImages.splice(i, 1);
+      renderAttachments();
+      resolve();
+    };
+    reader.readAsDataURL(file);
+  });
+}
+
+/** Waits for every in-flight file read, so a fast Send still carries the images. */
+function attachmentsReady() {
+  return Promise.all(state.attachedImages.map(i => i.ready).filter(Boolean));
 }
 
 /** The thumbnail strip, rebuilt from state so removal cannot desync it. */
@@ -1114,7 +1139,11 @@ function renderTriangulation({ anchors, camera, caption, basemap }) {
       // Label rides along its line, flipped where it would otherwise read upside down.
       let ang = Math.atan2(by - ay, bx - ax) * R2D;
       if (ang > 90 || ang < -90) ang += 180;
-      const mx = ax + (bx - ax) * 0.58, my = ay + (by - ay) * 0.58;
+      // Set back toward the camera end. At 0.58 the caption sat right where the
+      // anchor's own name label hangs, and on a tight cluster the two collided
+      // into an unreadable pile; the camera half of the line is always clear
+      // because every sight line starts from the same point.
+      const mx = ax + (bx - ax) * 0.40, my = ay + (by - ay) * 0.40;
       // A short line has no room for the full caption without running over the
       // markers at either end, so it gets the distance alone, set further off
       // the line. The bearing is still in the tool's text output either way.
@@ -1198,14 +1227,33 @@ function renderTriangulation({ anchors, camera, caption, basemap }) {
 
   const labelled = [...anchors.map((a, i) => ({ ...a, n: `${i + 1}. ${a.name}`, ink: PLAN_INK.anchor })),
                     ...(cam ? [{ ...cam, n: "Camera station", ink: PLAN_INK.camera, dir: camDir }] : [])];
+  /*
+   * The margin furniture is drawn last and always wins, so a name label that
+   * lands under it is simply lost: "Camera station" was printing straight over
+   * the scale bar. These are the two strips it must stay out of.
+   */
+  // Bands measured from what the furniture actually occupies, not from where it
+  // is anchored: the scale bar's caption sits 18px above its group origin, and a
+  // name label's own glyphs rise ~12px above its baseline.
+  const inScaleBar = (x, y) => y > PLAN_H - 46 && x < 240;
+  const inAttribution = (x, y) => y > PLAN_H - 30 && x > PLAN_W - 330;
+  // The longitude labels sit on baseline 38, so their glyphs run to ~y=42; a name
+  // label's own ascender reaches ~12 above its baseline. 58 is the first baseline
+  // that clears both.
+  const GRATICULE_SAFE_Y = 58;
+
   const labels = labelled.map((p, i) => {
     const x = sx(p), y = sy(p);
     // Anchors step their labels vertically so two near neighbours don't stack.
     let dx = p.dir ? p.dir.x * 22 : (x < PLAN_W / 2 ? 16 : -16);
-    const dy = p.dir ? p.dir.y * 22 : ((i % 3) - 1) * 15 - 2;
+    let dy = p.dir ? p.dir.y * 22 : ((i % 3) - 1) * 15 - 2;
     const wide = p.n.length * 7.4;            // ~14px type, close enough to flip on
     if (dx >= 0 && x + dx + 6 + wide > PLAN_W - 6) dx = -Math.abs(dx);
     else if (dx < 0 && x + dx - 6 - wide < 6) dx = Math.abs(dx);
+    // Push the label clear of the furniture rather than let it print underneath:
+    // the margin is drawn last, so a label that lands there is simply lost.
+    if (inScaleBar(x + dx, y + dy) || inAttribution(x + dx, y + dy)) dy = -Math.abs(dy) - 14;
+    else if (y + dy < GRATICULE_SAFE_Y) dy = GRATICULE_SAFE_Y - y;
     const right = dx >= 0;
     const len = Math.hypot(dx, dy) || 1;
     const tx = x + dx + (right ? 6 : -6), ty = y + dy;
@@ -1450,7 +1498,7 @@ function renderBotBubble(text, toolCards) {
   const html = mdLiteToHtml(text);
   const cards = toolCards.length
     ? `<div class="msg-tools">${toolCards.map(t => `
-        <a class="msg-tool-chip" href="${t.url}" target="_blank" rel="noopener noreferrer">
+        <a class="msg-tool-chip" href="${escapeHtml(t.url)}" target="_blank" rel="noopener noreferrer">
           <span>${t.categoryIcon || "🔗"}</span> ${escapeHtml(t.name)}
         </a>`).join("")}</div>`
     : "";
