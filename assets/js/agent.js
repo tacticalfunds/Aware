@@ -238,8 +238,21 @@ function meterStep(meter, onEvent, model, usage) {
 function makeMeter() {
   return {
     steps: 0,
+    toolCalls: 0,           // total calls made, however they were grouped
+    toolSteps: 0,           // steps that carried at least one call
     byModel: {},            // model -> { steps, in, out, cacheWrite, cacheRead, cost }
     unpriced: new Set(),    // models with no rate on file
+
+    /*
+     * Calls per step is the number that says whether batching is working, and it
+     * is not visible anywhere else: the trace lists every call but not how they
+     * were grouped, and cost alone can't distinguish six calls in one step from
+     * six steps of one. Output tokens are paid fresh per step and never cache, so
+     * this ratio is now the main thing separating a cheap run from an expensive one.
+     */
+    recordCalls(n) {
+      if (n > 0) { this.toolCalls += n; this.toolSteps++; }
+    },
 
     record(model, usage) {
       if (!usage) return null;
@@ -279,6 +292,8 @@ function makeMeter() {
         input: t.in, output: t.out,
         cacheWrite: t.cacheWrite, cacheRead: t.cacheRead,
         cost: t.cost,
+        toolCalls: this.toolCalls,
+        toolSteps: this.toolSteps,
         priced: this.unpriced.size === 0,
         unpriced: [...this.unpriced],
         perModel
@@ -1249,6 +1264,7 @@ async function runInvestigation({ apiKey, model, workerModel = null, task, image
     }
 
     const calls = (data.content || []).filter(b => b.type === "tool_use");
+    meter.recordCalls(calls.length);
     // Parallel calls come back in one turn and their results must go back in ONE
     // user message, or the model learns to stop batching them.
     const results = await Promise.all(calls.map(async call => {

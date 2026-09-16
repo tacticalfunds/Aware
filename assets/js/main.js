@@ -816,7 +816,19 @@ function createTraceBubble() {
             `${c.input.toLocaleString()} input · ${c.output.toLocaleString()} output` +
             (c.cacheRead ? ` · ${c.cacheRead.toLocaleString()} read from cache` : "") +
             (c.cacheWrite ? ` · ${c.cacheWrite.toLocaleString()} written to cache` : "") +
-            `</div>${rows}` +
+            `</div>` +
+            // Output tokens are paid fresh every step and never cache, so how many
+            // lookups rode along per step is what separates a cheap run from a dear
+            // one. A ratio near 1 means the agent asked one question at a time.
+            (c.toolSteps
+              ? `<div class="cost-detail">${c.toolCalls} tool call${c.toolCalls === 1 ? "" : "s"} over ` +
+                `${c.toolSteps} step${c.toolSteps === 1 ? "" : "s"} — ` +
+                `<strong>${(c.toolCalls / c.toolSteps).toFixed(1)} per step</strong>` +
+                (c.toolCalls / c.toolSteps < 1.5 && c.toolCalls > 2
+                  ? ` (low — independent lookups are not being batched)` : "") +
+                `</div>`
+              : "") +
+            `${rows}` +
             (c.priced
               ? `<div class="cost-note">Estimate at Anthropic's list API rates — your actual bill is authoritative.</div>`
               : `<div class="cost-note">No rate on file for ${c.unpriced.map(escapeHtml).join(", ")}, so this run is unpriced.</div>`) +
